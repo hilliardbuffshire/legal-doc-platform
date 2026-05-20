@@ -1,0 +1,11 @@
+backend/embed_model/
+backend/uploads/
+backend/meta.json
+backend/vector_store.pkl
+backend/__pycache__/
+frontend/node_modules/
+frontend/dist/
+*.pyc
+*.pyo
+.DS_Store
+Thumbs.db

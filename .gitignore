@@ -1,0 +1,24 @@
+# 환경변수 (절대 커밋 금지)
+backend/.env
+*.env
+
+# 데이터 (로컬용 — 서버에는 볼륨으로 관리)
+backend/uploads/
+backend/meta.json
+backend/vector_store.pkl
+
+# 임베딩 모델 캐시 (startup 시 자동 다운로드)
+backend/embed_model/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Node
+frontend/node_modules/
+frontend/dist/
+
+# OS
+.DS_Store
+Thumbs.db
