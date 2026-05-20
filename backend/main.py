@@ -212,26 +212,24 @@ async def search(q: str = Query(..., min_length=1)):
     if not store:
         return {"query": q, "results": []}
 
-    hits_raw = cosine_search(store, await embed(q), n=min(20, len(store)))
+    hits_raw = cosine_search(store, await embed(q), n=min(80, len(store)))
 
-    hits, seen = [], set()
+    # 문서(file_id) 단위로 그룹핑 — 문서당 최고 점수 청크만 유지
+    doc_map: dict = {}
     for h in hits_raw:
         m   = h["chunk"]["meta"]
-        key = f"{m['file_name']}|{m['page']}"
-        if key in seen:
-            continue
-        seen.add(key)
-        hits.append({
-            "text":      h["chunk"]["text"],
-            "file_name": m["file_name"],
-            "file_id":   m["file_id"],
-            "page":      m["page"],
-            "score":     round(h["score"], 3),
-        })
-        if len(hits) >= 10:
-            break
+        fid = m["file_id"]
+        if fid not in doc_map or h["score"] > doc_map[fid]["score"]:
+            doc_map[fid] = {
+                "text":      h["chunk"]["text"],
+                "file_name": m["file_name"],
+                "file_id":   fid,
+                "page":      m["page"],
+                "score":     round(h["score"], 3),
+            }
 
-    return {"query": q, "results": hits}
+    results = sorted(doc_map.values(), key=lambda x: x["score"], reverse=True)[:10]
+    return {"query": q, "results": results}
 
 # ── POST /api/chat (Streaming SSE) ────────────────────────────────────
 class ChatReq(BaseModel):
