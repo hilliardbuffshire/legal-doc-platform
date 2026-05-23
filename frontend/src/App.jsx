@@ -223,7 +223,7 @@ export default function App() {
       {/* ── 헤더 ── */}
       <header className="bg-white border-b sticky top-0 z-10 shadow-sm">
         <div className="px-6 py-4 flex items-center justify-between">
-          <h1 className="text-xl font-bold text-slate-800 tracking-tight">⚖️ 법률 문서 플랫폼</h1>
+          <h1 className="text-xl font-bold text-slate-800 tracking-tight">⚖️ 정상문 항소심 서류 파인더✝</h1>
           <div className="flex items-center gap-3">
             {uploading && <span className="text-sm text-blue-600 animate-pulse">업로드 중…</span>}
             {uploadMsg && (
