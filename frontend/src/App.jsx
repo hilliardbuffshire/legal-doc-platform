@@ -85,6 +85,7 @@ export default function App() {
   const [commentDraft,   setCommentDraft]   = useState('')
   const [uploading,      setUploading]      = useState(false)
   const [uploadMsg,      setUploadMsg]      = useState('')
+  const [uploadFailed,   setUploadFailed]   = useState([])   // 실패한 파일명 목록
   const fileInput  = useRef(null)
   const commentRef = useRef(null)
 
@@ -164,16 +165,24 @@ export default function App() {
   async function handleUpload(e) {
     const selectedFiles = Array.from(e.target.files)
     if (!selectedFiles.length) return
-    setUploading(true); setUploadMsg('')
-    let ok = 0, skip = 0, fail = 0
+    setUploading(true); setUploadMsg(''); setUploadFailed([])
+    let ok = 0, skip = 0
+    const failed = []
     for (const f of selectedFiles) {
       try {
         const res = await uploadFile(f)
         res.skipped ? skip++ : ok++
-      } catch { fail++ }
+      } catch (err) {
+        failed.push({ name: f.name, reason: err.message })
+      }
     }
     setUploading(false)
-    setUploadMsg(`완료: ${ok}개 업로드, ${skip}개 중복, ${fail}개 실패`)
+    setUploadFailed(failed)
+    setUploadMsg(
+      failed.length === 0
+        ? `완료: ${ok}개 업로드, ${skip}개 중복`
+        : `완료: ${ok}개 업로드, ${skip}개 중복, ${failed.length}개 실패`
+    )
     await loadFiles()
     e.target.value = ''
   }
@@ -212,20 +221,51 @@ export default function App() {
     <div className="min-h-screen bg-slate-50">
 
       {/* ── 헤더 ── */}
-      <header className="bg-white border-b px-6 py-4 flex items-center justify-between sticky top-0 z-10 shadow-sm">
-        <h1 className="text-xl font-bold text-slate-800 tracking-tight">⚖️ 법률 문서 플랫폼</h1>
-        <div className="flex items-center gap-3">
-          {uploading && <span className="text-sm text-blue-600 animate-pulse">업로드 중…</span>}
-          {uploadMsg && <span className="text-sm text-slate-500">{uploadMsg}</span>}
-          <button
-            onClick={() => fileInput.current?.click()}
-            disabled={uploading}
-            className="px-4 py-2 bg-blue-600 text-white text-sm font-semibold rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors"
-          >
-            + PDF 업로드
-          </button>
-          <input ref={fileInput} type="file" accept=".pdf" multiple className="hidden" onChange={handleUpload} />
+      <header className="bg-white border-b sticky top-0 z-10 shadow-sm">
+        <div className="px-6 py-4 flex items-center justify-between">
+          <h1 className="text-xl font-bold text-slate-800 tracking-tight">⚖️ 법률 문서 플랫폼</h1>
+          <div className="flex items-center gap-3">
+            {uploading && <span className="text-sm text-blue-600 animate-pulse">업로드 중…</span>}
+            {uploadMsg && (
+              <span className={`text-sm font-medium ${uploadFailed.length > 0 ? 'text-red-600' : 'text-slate-500'}`}>
+                {uploadMsg}
+              </span>
+            )}
+            <button
+              onClick={() => fileInput.current?.click()}
+              disabled={uploading}
+              className="px-4 py-2 bg-blue-600 text-white text-sm font-semibold rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors"
+            >
+              + PDF 업로드
+            </button>
+            <input ref={fileInput} type="file" accept=".pdf" multiple className="hidden" onChange={handleUpload} />
+          </div>
         </div>
+
+        {/* 실패 목록 — 실패한 파일이 있을 때만 표시 */}
+        {uploadFailed.length > 0 && (
+          <div className="border-t border-red-100 bg-red-50 px-6 py-3 space-y-1">
+            <div className="flex items-center justify-between">
+              <p className="text-sm font-semibold text-red-700">⚠️ 업로드 실패한 파일 ({uploadFailed.length}개)</p>
+              <button
+                onClick={() => setUploadFailed([])}
+                className="text-xs text-red-400 hover:text-red-600 transition-colors"
+              >
+                닫기 ✕
+              </button>
+            </div>
+            <ul className="space-y-1">
+              {uploadFailed.map((f, i) => (
+                <li key={i} className="text-sm text-red-800">
+                  <span className="font-medium break-all">{f.name}</span>
+                  {f.reason && (
+                    <span className="text-red-500 ml-2 text-xs">— {f.reason}</span>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
       </header>
 
       <main className="max-w-5xl mx-auto px-4 py-8 space-y-8">
