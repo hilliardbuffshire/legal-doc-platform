@@ -70,6 +70,7 @@ function SummaryAccordion({ summary, isOpen, onToggle }) {
 // ── 메인 앱 ──────────────────────────────────────────────────────────
 export default function App() {
   const [files,          setFiles]          = useState([])
+  const [displayIds,     setDisplayIds]     = useState([])   // 안정적인 정렬 순서 (별점 변경 시 유지)
   const [query,          setQuery]          = useState('')
   const [searchResults,  setSearchResults]  = useState([])
   const [searching,      setSearching]      = useState(false)
@@ -88,14 +89,13 @@ export default function App() {
   const [nameDraft,      setNameDraft]      = useState('')
   const [uploading,      setUploading]      = useState(false)
   const [uploadMsg,      setUploadMsg]      = useState('')
-  const [uploadFailed,   setUploadFailed]   = useState([])   // 실패한 파일명 목록
+  const [uploadFailed,   setUploadFailed]   = useState([])
   const fileInput  = useRef(null)
   const commentRef = useRef(null)
   const nameRef    = useRef(null)
 
   useEffect(() => { loadFiles() }, [])
 
-  // 댓글·제목 입력창이 열리면 포커스
   useEffect(() => {
     if (editingComment && commentRef.current) commentRef.current.focus()
   }, [editingComment])
@@ -107,16 +107,40 @@ export default function App() {
     }
   }, [editingName])
 
-  async function loadFiles() {
-    try { setFiles(await getFiles()) } catch { /* silent */ }
+  // ── 정렬 헬퍼: 파일 목록을 정렬하고 ID 배열 반환 ─────────────────
+  function computeSortedIds(fileList, sortByVal) {
+    return fileList
+      .map(f => ({ ...f, ...parseMeta(f.file_name) }))
+      .sort((a, b) => {
+        if (sortByVal === 'star_desc') return (b.star - a.star) || (b.updated_at - a.updated_at)
+        if (sortByVal === 'star_asc')  return (a.star - b.star) || (b.updated_at - a.updated_at)
+        if (sortByVal === 'num')       return (Number(a.num) || 999) - (Number(b.num) || 999)
+        return b.updated_at - a.updated_at  // 'updated_at' (기본)
+      })
+      .map(f => f.file_id)
   }
 
-  // ── 별점 클릭 (낙관적 업데이트) ──────────────────────────────────
+  async function loadFiles() {
+    try {
+      const newFiles = await getFiles()
+      setFiles(newFiles)
+      setDisplayIds(computeSortedIds(newFiles, sortBy))
+    } catch { /* silent */ }
+  }
+
+  // ── 정렬 기준 변경 (명시적 사용자 액션만 재정렬) ─────────────────
+  function handleSortChange(newSortBy) {
+    setSortBy(newSortBy)
+    setDisplayIds(computeSortedIds(files, newSortBy))
+  }
+
+  // ── 별점 클릭 (낙관적 업데이트, 순서 변경 없음) ──────────────────
   async function handleStarClick(fid, n) {
     const cur  = files.find(f => f.file_id === fid)?.star ?? 0
     const next = cur === n ? 0 : n
+    // updated_at 갱신 없음 → displayIds 순서 유지
     setFiles(fs => fs.map(f =>
-      f.file_id === fid ? { ...f, star: next, updated_at: Date.now() / 1000 } : f
+      f.file_id === fid ? { ...f, star: next } : f
     ))
     try { await patchStar(fid, next) } catch { /* 실패 시 다음 loadFiles에서 복구 */ }
   }
@@ -219,31 +243,41 @@ export default function App() {
     try {
       await deleteFile(fid)
       setFiles(f => f.filter(x => x.file_id !== fid))
+      setDisplayIds(ids => ids.filter(id => id !== fid))
     } catch (err) {
       alert('삭제 실패: ' + err.message)
     }
   }
 
-  // ── 필터 & 정렬 ───────────────────────────────────────────────────
-  const allMeta = files.map(f => ({ ...f, ...parseMeta(f.file_name) }))
-  const types   = [...new Set(allMeta.map(f => f.docType).filter(Boolean))].sort()
-  const senders = [...new Set(allMeta.map(f => f.sender).filter(Boolean))].sort()
+  // ── 사이드바에서 카드로 스크롤 ───────────────────────────────────
+  function scrollToCard(fid) {
+    const el = document.getElementById(`fc-${fid}`)
+    if (!el) return
+    el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    el.style.outline = '2px solid #3b82f6'
+    setTimeout(() => { el.style.outline = '' }, 1500)
+  }
 
-  const visible = allMeta
-    .filter(f =>
+  // ── 파생 데이터 ───────────────────────────────────────────────────
+  const allMeta     = files.map(f => ({ ...f, ...parseMeta(f.file_name) }))
+  const allMetaById = Object.fromEntries(allMeta.map(f => [f.file_id, f]))
+  const types       = [...new Set(allMeta.map(f => f.docType).filter(Boolean))].sort()
+  const senders     = [...new Set(allMeta.map(f => f.sender).filter(Boolean))].sort()
+
+  // visible: displayIds 순서 고정 + 현재 필터만 적용 (별점 변경 시 순서 불변)
+  const visible = displayIds
+    .map(id => allMetaById[id])
+    .filter(f => f &&
       (!query.trim()   || f.file_name.toLowerCase().includes(query.trim().toLowerCase())) &&
       (!filterType     || f.docType === filterType) &&
       (!filterSender   || f.sender  === filterSender) &&
       (filterMinStar === 0 || f.star >= filterMinStar)
     )
-    .sort((a, b) => {
-      if (sortBy === 'star_desc') return (b.star - a.star) || (b.updated_at - a.updated_at)
-      if (sortBy === 'star_asc')  return (a.star - b.star) || (b.updated_at - a.updated_at)
-      if (sortBy === 'num')       return (Number(a.num) || 999) - (Number(b.num) || 999)
-      return b.updated_at - a.updated_at  // 'updated_at' (기본)
-    })
 
-  const hasFilter = filterType || filterSender || filterMinStar > 0
+  // 사이드바: 항상 번호순 정렬
+  const sidebarList = [...allMeta].sort((a, b) => (Number(a.num) || 999) - (Number(b.num) || 999))
+  const visibleIds  = new Set(visible.map(f => f.file_id))
+  const hasFilter   = filterType || filterSender || filterMinStar > 0
 
   return (
     <div className="min-h-screen bg-slate-50">
@@ -270,7 +304,7 @@ export default function App() {
           </div>
         </div>
 
-        {/* 실패 목록 — 실패한 파일이 있을 때만 표시 */}
+        {/* 실패 목록 */}
         {uploadFailed.length > 0 && (
           <div className="border-t border-red-100 bg-red-50 px-6 py-3 space-y-1">
             <div className="flex items-center justify-between">
@@ -296,378 +330,415 @@ export default function App() {
         )}
       </header>
 
-      <main className="max-w-5xl mx-auto px-4 py-8 space-y-8">
+      {/* ── 사이드바 + 메인 레이아웃 ── */}
+      <div className="flex">
 
-        {/* ── 파일명 형식 안내 ── */}
-        <section className="bg-slate-800 rounded-2xl px-5 py-4 text-slate-300 text-sm space-y-3">
-          <p className="text-xs font-semibold text-slate-400 uppercase tracking-widest">파일명 형식 안내</p>
-          <div className="font-mono text-xs bg-slate-900 rounded-lg px-4 py-3 text-slate-300 break-all leading-relaxed">
-            <span className="text-blue-400 font-bold">[01]</span>
-            {' '}
-            <span className="text-emerald-400">소장</span>
-            {' ／ '}
-            <span className="text-amber-400">원고</span>
-            {' ／ '}
-            <span className="text-slate-300">손해배상청구</span>
-            {' ／ '}
-            <span className="text-slate-500">2023가단62004</span>
-            {' '}
-            <span className="text-slate-500">(pp.1-12).pdf</span>
-          </div>
-          <div className="flex flex-wrap gap-x-6 gap-y-1 text-xs">
-            <span><span className="text-blue-400 font-bold">[ ]</span> 문서 번호</span>
-            <span><span className="text-emerald-400 font-bold">◼</span> 문서 종류</span>
-            <span><span className="text-amber-400 font-bold">◼</span> 제출자</span>
-            <span><span className="text-slate-300 font-bold">◼</span> 핵심 내용</span>
-            <span><span className="text-slate-500 font-bold">◼</span> 사건번호 &amp; 페이지</span>
-          </div>
-        </section>
-
-        {/* ── 검색창 ── */}
-        <section>
-          <form onSubmit={handleSearch} className="flex gap-2">
-            <input
-              type="text"
-              value={query}
-              onChange={e => setQuery(e.target.value)}
-              placeholder="제목 검색 (예: 준비서면) — 입력 즉시 목록 필터링 · 검색 버튼으로 AI 분석"
-              className="flex-1 px-4 py-3 border rounded-xl text-base focus:outline-none focus:ring-2 focus:ring-blue-400 bg-white shadow-sm"
-            />
-            <button
-              type="submit"
-              disabled={aiLoading || !query.trim()}
-              className="px-6 py-3 bg-blue-600 text-white text-base font-semibold rounded-xl hover:bg-blue-700 disabled:opacity-50 shadow-sm transition-colors"
-            >
-              {aiLoading ? '분석 중…' : '검색'}
-            </button>
-          </form>
-        </section>
-
-        {/* ── 벡터 검색 결과 (즉시 표시) ── */}
-        {(searchResults.length > 0 || searching) && (
-          <section className="bg-white rounded-2xl border-2 border-blue-300 shadow-sm p-5 space-y-3">
-            <div className="flex items-center gap-2">
-              <span>📋</span>
-              <span className="font-bold text-slate-800">관련 문서 찾기 결과</span>
-              <span className="text-sm text-slate-400">— &ldquo;{query}&rdquo;</span>
+        {/* ── 좌측 파일 네비게이션 사이드바 ── */}
+        <nav className="hidden lg:block w-56 shrink-0 border-r border-slate-200 bg-white">
+          <div className="sticky top-[65px] overflow-y-auto" style={{ height: 'calc(100vh - 65px)' }}>
+            <div className="px-3 pt-4 pb-2 border-b border-slate-100">
+              <p className="text-xs font-semibold text-slate-400 uppercase tracking-widest">
+                전체 목록 ({sidebarList.length})
+              </p>
             </div>
-
-            {searching ? (
-              <p className="text-sm text-blue-500 animate-pulse">문서 검색 중…</p>
-            ) : (
-              <>
-                {searchResults[0] && (() => {
-                  const top = parseMeta(searchResults[0].file_name)
-                  return (
-                    <div className="bg-blue-50 border border-blue-200 rounded-xl px-4 py-3 flex items-center gap-3">
-                      <span className="text-2xl font-black text-blue-700">#{top.num}번</span>
-                      <div className="flex-1 min-w-0">
-                        <p className="font-semibold text-blue-800">{top.docType}</p>
-                        {top.sender && <p className="text-sm text-blue-600">{top.sender}</p>}
-                      </div>
-                      <span className="text-sm font-semibold text-emerald-600 shrink-0">
-                        관련도 {Math.round(searchResults[0].score * 100)}%
-                      </span>
-                      <a
-                        href={getPdfUrl(searchResults[0].file_id)}
-                        target="_blank" rel="noreferrer"
-                        className="text-sm px-3 py-1.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 shrink-0 transition-colors"
-                      >
-                        열기
-                      </a>
-                    </div>
-                  )
-                })()}
-
-                {searchResults.length > 1 && (
-                  <ul className="divide-y divide-slate-100">
-                    {searchResults.slice(1).map((r, i) => {
-                      const m = parseMeta(r.file_name)
-                      return (
-                        <li key={r.file_id} className="flex items-center gap-3 py-2.5">
-                          <span className="text-sm text-slate-400 w-5 shrink-0">{i + 2}</span>
-                          {m.num && (
-                            <span className="text-sm font-bold text-blue-700 bg-blue-50 border border-blue-200 rounded px-1.5 py-0.5 shrink-0">
-                              #{m.num}번
-                            </span>
-                          )}
-                          <span className="text-slate-700 flex-1 min-w-0 truncate">{m.docType || r.file_name}</span>
-                          <span className="text-sm text-slate-400 shrink-0">{Math.round(r.score * 100)}%</span>
-                          <a
-                            href={getPdfUrl(r.file_id)}
-                            target="_blank" rel="noreferrer"
-                            className="text-sm px-2 py-1 bg-slate-100 hover:bg-slate-200 rounded text-slate-600 shrink-0 transition-colors"
-                          >
-                            열기
-                          </a>
-                        </li>
-                      )
-                    })}
-                  </ul>
-                )}
-              </>
-            )}
-          </section>
-        )}
-
-        {/* ── AI 응답 (아코디언) ── */}
-        {(aiText || aiLoading) && (
-          <section className="bg-white rounded-2xl border shadow-sm overflow-hidden">
-            {/* 헤더 — 클릭으로 접기/펼치기 */}
-            <button
-              onClick={() => setAiOpen(o => !o)}
-              className="w-full flex items-center justify-between px-6 py-4 hover:bg-slate-50 transition-colors"
-            >
-              <div className="flex items-center gap-2 font-semibold text-slate-700">
-                <span>🤖</span><span>AI 분석 결과</span>
-                {aiLoading && <span className="text-blue-500 animate-pulse ml-2 font-normal text-sm">생성 중…</span>}
-              </div>
-              <span
-                className="text-slate-400 text-sm transition-transform duration-200"
-                style={{ transform: aiOpen ? 'rotate(90deg)' : 'rotate(0deg)' }}
-              >
-                ▶
-              </span>
-            </button>
-
-            {/* 본문 */}
-            <div className={`summary-body${aiOpen ? ' open' : ''}`}>
-              <div>
-                <div className="px-6 pb-6 space-y-4 border-t">
-                  <p className="text-slate-700 whitespace-pre-wrap leading-relaxed pt-4">{aiText}</p>
-                  {aiSources.length > 0 && (
-                    <div className="pt-2 border-t space-y-1">
-                      <p className="text-sm font-semibold text-slate-500">📎 참조 문서</p>
-                      {aiSources.map((s, i) => (
-                        <a
-                          key={i}
-                          href={getPdfUrl(s.file_id)}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="block text-sm text-blue-600 hover:underline truncate"
-                        >
-                          {s.file_name} · {s.page}페이지
-                        </a>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              </div>
-            </div>
-          </section>
-        )}
-
-        {/* ── 문서 목록 ── */}
-        <section className="space-y-3">
-          <div className="flex items-center justify-between flex-wrap gap-3">
-            <h2 className="font-semibold text-slate-600">
-              전체 문서 {visible.length}/{files.length}건
-            </h2>
-            <div className="flex gap-2 flex-wrap items-center">
-              {/* 정렬 */}
-              <select
-                value={sortBy}
-                onChange={e => setSortBy(e.target.value)}
-                className="text-sm border rounded-lg px-3 py-1.5 bg-white focus:outline-none focus:ring-2 focus:ring-blue-400"
-              >
-                <option value="updated_at">최신 수정순</option>
-                <option value="star_desc">별점 높은순</option>
-                <option value="star_asc">별점 낮은순</option>
-                <option value="num">번호순</option>
-              </select>
-
-              {/* 최소 별점 필터 */}
-              <select
-                value={filterMinStar}
-                onChange={e => setFilterMinStar(Number(e.target.value))}
-                className="text-sm border rounded-lg px-3 py-1.5 bg-white focus:outline-none focus:ring-2 focus:ring-blue-400"
-              >
-                <option value={0}>별점 전체</option>
-                <option value={1}>★ 1점 이상</option>
-                <option value={2}>★★ 2점 이상</option>
-                <option value={3}>★★★ 3점 이상</option>
-                <option value={4}>★★★★ 4점 이상</option>
-                <option value={5}>★★★★★ 5점만</option>
-              </select>
-
-              {/* 종류 필터 */}
-              <select
-                value={filterType}
-                onChange={e => setFilterType(e.target.value)}
-                className="text-sm border rounded-lg px-3 py-1.5 bg-white focus:outline-none focus:ring-2 focus:ring-blue-400"
-              >
-                <option value="">종류 전체</option>
-                {types.map(t => <option key={t} value={t}>{t}</option>)}
-              </select>
-
-              {/* 제출자 필터 */}
-              <select
-                value={filterSender}
-                onChange={e => setFilterSender(e.target.value)}
-                className="text-sm border rounded-lg px-3 py-1.5 bg-white focus:outline-none focus:ring-2 focus:ring-blue-400"
-              >
-                <option value="">제출자 전체</option>
-                {senders.map(s => <option key={s} value={s}>{s}</option>)}
-              </select>
-
-              {hasFilter && (
-                <button
-                  onClick={() => { setFilterType(''); setFilterSender(''); setFilterMinStar(0) }}
-                  className="text-sm text-slate-500 hover:text-slate-700 px-2 transition-colors"
-                >
-                  ✕ 초기화
-                </button>
-              )}
-            </div>
-          </div>
-
-          {visible.length === 0 ? (
-            <div className="text-center py-16 text-slate-400">
-              {files.length === 0
-                ? '업로드된 문서가 없습니다. PDF를 업로드해 주세요.'
-                : '조건에 맞는 문서가 없습니다.'}
-            </div>
-          ) : (
-            <ul className="space-y-2">
-              {visible.map(f => (
-                <li
-                  key={f.file_id}
-                  className="bg-white rounded-2xl border shadow-sm px-5 py-4 hover:border-blue-300 transition-colors"
-                >
-                  {/* 윗줄: 배지들 + 열기/다운/삭제 버튼 */}
-                  <div className="flex items-start justify-between gap-4">
-                    <div className="min-w-0 flex-1">
-                      <div className="flex flex-wrap gap-1.5 items-center mb-1.5">
-                        {f.num && (
-                          <span className="text-sm font-bold text-blue-700 bg-blue-50 border border-blue-200 rounded px-1.5 py-0.5">
-                            #{f.num}
-                          </span>
-                        )}
-                        {f.docType && (
-                          <span className="text-sm text-slate-500 bg-slate-100 rounded px-1.5 py-0.5">
-                            {f.docType}
-                          </span>
-                        )}
-                        {f.sender && (
-                          <span className="text-sm text-emerald-700 bg-emerald-50 border border-emerald-200 rounded px-1.5 py-0.5">
-                            {f.sender}
-                          </span>
-                        )}
-                      </div>
-                      {editingName === f.file_id ? (
-                        <input
-                          ref={nameRef}
-                          type="text"
-                          value={nameDraft}
-                          onChange={e => setNameDraft(e.target.value)}
-                          onBlur={() => handleNameSave(f.file_id)}
-                          onKeyDown={e => handleNameKeyDown(e, f.file_id)}
-                          className="w-full text-sm border border-blue-400 rounded-lg px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-400 bg-white mt-1"
-                        />
-                      ) : (
-                        <div className="flex items-start gap-1.5 group/name mt-1">
-                          <p className="text-slate-800 break-all leading-snug flex-1">{f.file_name}</p>
-                          <button
-                            onClick={() => { setEditingName(f.file_id); setNameDraft(f.file_name) }}
-                            className="opacity-0 group-hover/name:opacity-100 transition-opacity shrink-0 text-slate-400 hover:text-blue-600 text-base leading-snug mt-0.5"
-                            title="제목 수정"
-                          >
-                            ✏️
-                          </button>
-                        </div>
-                      )}
-                      <p className="text-sm text-slate-400 mt-0.5">
-                        {f.total_pages}페이지 · {f.chunks}청크
-                        {f.is_scanned && (
-                          <span className="ml-2 text-xs text-orange-500 font-medium">📷 이미지 스캔 (검색 불가)</span>
-                        )}
-                      </p>
-                    </div>
-
-                    <div className="flex gap-2 shrink-0 mt-0.5">
-                      <a
-                        href={getPdfUrl(f.file_id)}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="text-sm px-3 py-1.5 bg-slate-100 hover:bg-slate-200 rounded-lg text-slate-700 transition-colors"
-                      >
-                        열기
-                      </a>
-                      <a
-                        href={getPdfUrl(f.file_id, true)}
-                        className="text-sm px-3 py-1.5 bg-slate-100 hover:bg-slate-200 rounded-lg text-slate-700 transition-colors"
-                      >
-                        다운
-                      </a>
-                      <button
-                        onClick={() => { setEditingName(f.file_id); setNameDraft(f.file_name) }}
-                        className="text-sm px-3 py-1.5 bg-slate-100 hover:bg-blue-100 rounded-lg text-blue-600 transition-colors"
-                      >
-                        제목수정
-                      </button>
-                      <button
-                        onClick={() => handleDelete(f.file_id, f.file_name)}
-                        className="text-sm px-3 py-1.5 bg-red-50 hover:bg-red-100 rounded-lg text-red-600 transition-colors"
-                      >
-                        삭제
-                      </button>
-                    </div>
-                  </div>
-
-                  {/* 별점 + 원고 메모 */}
-                  <div className="mt-3 flex items-start gap-4 flex-wrap">
-                    <StarRating
-                      value={f.star}
-                      onChange={n => handleStarClick(f.file_id, n)}
-                    />
-
-                    <div className="flex-1 min-w-0">
-                      {editingComment === f.file_id ? (
-                        <input
-                          ref={commentRef}
-                          type="text"
-                          value={commentDraft}
-                          onChange={e => setCommentDraft(e.target.value)}
-                          onBlur={() => handleCommentSave(f.file_id)}
-                          onKeyDown={e => handleCommentKeyDown(e, f.file_id)}
-                          placeholder="원고 메모 입력 (Enter 저장, Esc 취소)…"
-                          maxLength={200}
-                          className="w-full text-sm border border-blue-300 rounded-lg px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-400 bg-white"
-                        />
-                      ) : (
-                        <button
-                          onClick={() => {
-                            setEditingComment(f.file_id)
-                            setCommentDraft(f.comment || '')
-                          }}
-                          className="text-left w-full group"
-                        >
-                          {f.comment ? (
-                            <span className="text-sm text-slate-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-1.5 inline-block group-hover:bg-amber-100 transition-colors">
-                              📝 {f.comment}
-                            </span>
-                          ) : (
-                            <span className="text-sm text-slate-400 group-hover:text-slate-600 transition-colors italic">
-                              + 원고 메모 추가…
-                            </span>
-                          )}
-                        </button>
-                      )}
-                    </div>
-                  </div>
-
-                  {/* AI 요약 아코디언 */}
-                  <SummaryAccordion
-                    summary={f.summary}
-                    isOpen={openSummaries.has(f.file_id)}
-                    onToggle={() => toggleSummary(f.file_id)}
-                  />
+            <ul className="py-2">
+              {sidebarList.map(f => (
+                <li key={f.file_id}>
+                  <button
+                    onClick={() => scrollToCard(f.file_id)}
+                    className={`w-full text-left px-2 py-1.5 mx-1 flex items-start gap-1.5 hover:bg-blue-50 rounded-lg transition-colors ${
+                      visibleIds.has(f.file_id) ? '' : 'opacity-35'
+                    }`}
+                    style={{ width: 'calc(100% - 8px)' }}
+                    title={f.file_name}
+                  >
+                    <span className="shrink-0 text-xs font-bold text-blue-600 leading-tight pt-0.5">
+                      [{f.num ?? '?'}]
+                    </span>
+                    <span className="text-xs text-slate-600 leading-tight flex-1 overflow-hidden"
+                          style={{ display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
+                      {f.docType || f.file_name}
+                    </span>
+                  </button>
                 </li>
               ))}
             </ul>
+          </div>
+        </nav>
+
+        {/* ── 메인 콘텐츠 ── */}
+        <main className="flex-1 min-w-0 px-4 lg:px-6 py-8 space-y-8">
+
+          {/* ── 파일명 형식 안내 ── */}
+          <section className="bg-slate-800 rounded-2xl px-5 py-4 text-slate-300 text-sm space-y-3">
+            <p className="text-xs font-semibold text-slate-400 uppercase tracking-widest">파일명 형식 안내</p>
+            <div className="font-mono text-xs bg-slate-900 rounded-lg px-4 py-3 text-slate-300 break-all leading-relaxed">
+              <span className="text-blue-400 font-bold">[01]</span>
+              {' '}
+              <span className="text-emerald-400">소장</span>
+              {' ／ '}
+              <span className="text-amber-400">원고</span>
+              {' ／ '}
+              <span className="text-slate-300">손해배상청구</span>
+              {' ／ '}
+              <span className="text-slate-500">2023가단62004</span>
+              {' '}
+              <span className="text-slate-500">(pp.1-12).pdf</span>
+            </div>
+            <div className="flex flex-wrap gap-x-6 gap-y-1 text-xs">
+              <span><span className="text-blue-400 font-bold">[ ]</span> 문서 번호</span>
+              <span><span className="text-emerald-400 font-bold">◼</span> 문서 종류</span>
+              <span><span className="text-amber-400 font-bold">◼</span> 제출자</span>
+              <span><span className="text-slate-300 font-bold">◼</span> 핵심 내용</span>
+              <span><span className="text-slate-500 font-bold">◼</span> 사건번호 &amp; 페이지</span>
+            </div>
+          </section>
+
+          {/* ── 검색창 ── */}
+          <section>
+            <form onSubmit={handleSearch} className="flex gap-2">
+              <input
+                type="text"
+                value={query}
+                onChange={e => setQuery(e.target.value)}
+                placeholder="제목 검색 (예: 준비서면) — 입력 즉시 목록 필터링 · 검색 버튼으로 AI 분석"
+                className="flex-1 px-4 py-3 border rounded-xl text-base focus:outline-none focus:ring-2 focus:ring-blue-400 bg-white shadow-sm"
+              />
+              <button
+                type="submit"
+                disabled={aiLoading || !query.trim()}
+                className="px-6 py-3 bg-blue-600 text-white text-base font-semibold rounded-xl hover:bg-blue-700 disabled:opacity-50 shadow-sm transition-colors"
+              >
+                {aiLoading ? '분석 중…' : '검색'}
+              </button>
+            </form>
+          </section>
+
+          {/* ── 벡터 검색 결과 (즉시 표시) ── */}
+          {(searchResults.length > 0 || searching) && (
+            <section className="bg-white rounded-2xl border-2 border-blue-300 shadow-sm p-5 space-y-3">
+              <div className="flex items-center gap-2">
+                <span>📋</span>
+                <span className="font-bold text-slate-800">관련 문서 찾기 결과</span>
+                <span className="text-sm text-slate-400">— &ldquo;{query}&rdquo;</span>
+              </div>
+
+              {searching ? (
+                <p className="text-sm text-blue-500 animate-pulse">문서 검색 중…</p>
+              ) : (
+                <>
+                  {searchResults[0] && (() => {
+                    const top = parseMeta(searchResults[0].file_name)
+                    return (
+                      <div className="bg-blue-50 border border-blue-200 rounded-xl px-4 py-3 flex items-center gap-3">
+                        <span className="text-2xl font-black text-blue-700">#{top.num}번</span>
+                        <div className="flex-1 min-w-0">
+                          <p className="font-semibold text-blue-800">{top.docType}</p>
+                          {top.sender && <p className="text-sm text-blue-600">{top.sender}</p>}
+                        </div>
+                        <span className="text-sm font-semibold text-emerald-600 shrink-0">
+                          관련도 {Math.round(searchResults[0].score * 100)}%
+                        </span>
+                        <a
+                          href={getPdfUrl(searchResults[0].file_id)}
+                          target="_blank" rel="noreferrer"
+                          className="text-sm px-3 py-1.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 shrink-0 transition-colors"
+                        >
+                          열기
+                        </a>
+                      </div>
+                    )
+                  })()}
+
+                  {searchResults.length > 1 && (
+                    <ul className="divide-y divide-slate-100">
+                      {searchResults.slice(1).map((r, i) => {
+                        const m = parseMeta(r.file_name)
+                        return (
+                          <li key={r.file_id} className="flex items-center gap-3 py-2.5">
+                            <span className="text-sm text-slate-400 w-5 shrink-0">{i + 2}</span>
+                            {m.num && (
+                              <span className="text-sm font-bold text-blue-700 bg-blue-50 border border-blue-200 rounded px-1.5 py-0.5 shrink-0">
+                                #{m.num}번
+                              </span>
+                            )}
+                            <span className="text-slate-700 flex-1 min-w-0 truncate">{m.docType || r.file_name}</span>
+                            <span className="text-sm text-slate-400 shrink-0">{Math.round(r.score * 100)}%</span>
+                            <a
+                              href={getPdfUrl(r.file_id)}
+                              target="_blank" rel="noreferrer"
+                              className="text-sm px-2 py-1 bg-slate-100 hover:bg-slate-200 rounded text-slate-600 shrink-0 transition-colors"
+                            >
+                              열기
+                            </a>
+                          </li>
+                        )
+                      })}
+                    </ul>
+                  )}
+                </>
+              )}
+            </section>
           )}
-        </section>
-      </main>
+
+          {/* ── AI 응답 (아코디언) ── */}
+          {(aiText || aiLoading) && (
+            <section className="bg-white rounded-2xl border shadow-sm overflow-hidden">
+              <button
+                onClick={() => setAiOpen(o => !o)}
+                className="w-full flex items-center justify-between px-6 py-4 hover:bg-slate-50 transition-colors"
+              >
+                <div className="flex items-center gap-2 font-semibold text-slate-700">
+                  <span>🤖</span><span>AI 분석 결과</span>
+                  {aiLoading && <span className="text-blue-500 animate-pulse ml-2 font-normal text-sm">생성 중…</span>}
+                </div>
+                <span
+                  className="text-slate-400 text-sm transition-transform duration-200"
+                  style={{ transform: aiOpen ? 'rotate(90deg)' : 'rotate(0deg)' }}
+                >
+                  ▶
+                </span>
+              </button>
+
+              <div className={`summary-body${aiOpen ? ' open' : ''}`}>
+                <div>
+                  <div className="px-6 pb-6 space-y-4 border-t">
+                    <p className="text-slate-700 whitespace-pre-wrap leading-relaxed pt-4">{aiText}</p>
+                    {aiSources.length > 0 && (
+                      <div className="pt-2 border-t space-y-1">
+                        <p className="text-sm font-semibold text-slate-500">📎 참조 문서</p>
+                        {aiSources.map((s, i) => (
+                          <a
+                            key={i}
+                            href={getPdfUrl(s.file_id)}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="block text-sm text-blue-600 hover:underline truncate"
+                          >
+                            {s.file_name} · {s.page}페이지
+                          </a>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </section>
+          )}
+
+          {/* ── 문서 목록 ── */}
+          <section className="space-y-3">
+            <div className="flex items-center justify-between flex-wrap gap-3">
+              <h2 className="font-semibold text-slate-600">
+                전체 문서 {visible.length}/{files.length}건
+              </h2>
+              <div className="flex gap-2 flex-wrap items-center">
+                {/* 정렬 */}
+                <select
+                  value={sortBy}
+                  onChange={e => handleSortChange(e.target.value)}
+                  className="text-sm border rounded-lg px-3 py-1.5 bg-white focus:outline-none focus:ring-2 focus:ring-blue-400"
+                >
+                  <option value="updated_at">최신 수정순</option>
+                  <option value="star_desc">별점 높은순</option>
+                  <option value="star_asc">별점 낮은순</option>
+                  <option value="num">번호순</option>
+                </select>
+
+                {/* 최소 별점 필터 */}
+                <select
+                  value={filterMinStar}
+                  onChange={e => setFilterMinStar(Number(e.target.value))}
+                  className="text-sm border rounded-lg px-3 py-1.5 bg-white focus:outline-none focus:ring-2 focus:ring-blue-400"
+                >
+                  <option value={0}>별점 전체</option>
+                  <option value={1}>★ 1점 이상</option>
+                  <option value={2}>★★ 2점 이상</option>
+                  <option value={3}>★★★ 3점 이상</option>
+                  <option value={4}>★★★★ 4점 이상</option>
+                  <option value={5}>★★★★★ 5점만</option>
+                </select>
+
+                {/* 종류 필터 */}
+                <select
+                  value={filterType}
+                  onChange={e => setFilterType(e.target.value)}
+                  className="text-sm border rounded-lg px-3 py-1.5 bg-white focus:outline-none focus:ring-2 focus:ring-blue-400"
+                >
+                  <option value="">종류 전체</option>
+                  {types.map(t => <option key={t} value={t}>{t}</option>)}
+                </select>
+
+                {/* 제출자 필터 */}
+                <select
+                  value={filterSender}
+                  onChange={e => setFilterSender(e.target.value)}
+                  className="text-sm border rounded-lg px-3 py-1.5 bg-white focus:outline-none focus:ring-2 focus:ring-blue-400"
+                >
+                  <option value="">제출자 전체</option>
+                  {senders.map(s => <option key={s} value={s}>{s}</option>)}
+                </select>
+
+                {hasFilter && (
+                  <button
+                    onClick={() => { setFilterType(''); setFilterSender(''); setFilterMinStar(0) }}
+                    className="text-sm text-slate-500 hover:text-slate-700 px-2 transition-colors"
+                  >
+                    ✕ 초기화
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {visible.length === 0 ? (
+              <div className="text-center py-16 text-slate-400">
+                {files.length === 0
+                  ? '업로드된 문서가 없습니다. PDF를 업로드해 주세요.'
+                  : '조건에 맞는 문서가 없습니다.'}
+              </div>
+            ) : (
+              <ul className="space-y-2">
+                {visible.map(f => (
+                  <li
+                    key={f.file_id}
+                    id={`fc-${f.file_id}`}
+                    className="bg-white rounded-2xl border shadow-sm px-5 py-4 hover:border-blue-300 transition-colors"
+                  >
+                    {/* 윗줄: 배지들 + 열기/다운/삭제 버튼 */}
+                    <div className="flex items-start justify-between gap-4">
+                      <div className="min-w-0 flex-1">
+                        <div className="flex flex-wrap gap-1.5 items-center mb-1.5">
+                          {f.num && (
+                            <span className="text-sm font-bold text-blue-700 bg-blue-50 border border-blue-200 rounded px-1.5 py-0.5">
+                              #{f.num}
+                            </span>
+                          )}
+                          {f.docType && (
+                            <span className="text-sm text-slate-500 bg-slate-100 rounded px-1.5 py-0.5">
+                              {f.docType}
+                            </span>
+                          )}
+                          {f.sender && (
+                            <span className="text-sm text-emerald-700 bg-emerald-50 border border-emerald-200 rounded px-1.5 py-0.5">
+                              {f.sender}
+                            </span>
+                          )}
+                        </div>
+                        {editingName === f.file_id ? (
+                          <input
+                            ref={nameRef}
+                            type="text"
+                            value={nameDraft}
+                            onChange={e => setNameDraft(e.target.value)}
+                            onBlur={() => handleNameSave(f.file_id)}
+                            onKeyDown={e => handleNameKeyDown(e, f.file_id)}
+                            className="w-full text-sm border border-blue-400 rounded-lg px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-400 bg-white mt-1"
+                          />
+                        ) : (
+                          <div className="flex items-start gap-1.5 group/name mt-1">
+                            <p className="text-slate-800 break-all leading-snug flex-1">{f.file_name}</p>
+                            <button
+                              onClick={() => { setEditingName(f.file_id); setNameDraft(f.file_name) }}
+                              className="opacity-0 group-hover/name:opacity-100 transition-opacity shrink-0 text-slate-400 hover:text-blue-600 text-base leading-snug mt-0.5"
+                              title="제목 수정"
+                            >
+                              ✏️
+                            </button>
+                          </div>
+                        )}
+                        <p className="text-sm text-slate-400 mt-0.5">
+                          {f.total_pages}페이지 · {f.chunks}청크
+                          {f.is_scanned && (
+                            <span className="ml-2 text-xs text-orange-500 font-medium">📷 이미지 스캔 (검색 불가)</span>
+                          )}
+                        </p>
+                      </div>
+
+                      <div className="flex gap-2 shrink-0 mt-0.5">
+                        <a
+                          href={getPdfUrl(f.file_id)}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="text-sm px-3 py-1.5 bg-slate-100 hover:bg-slate-200 rounded-lg text-slate-700 transition-colors"
+                        >
+                          열기
+                        </a>
+                        <a
+                          href={getPdfUrl(f.file_id, true)}
+                          className="text-sm px-3 py-1.5 bg-slate-100 hover:bg-slate-200 rounded-lg text-slate-700 transition-colors"
+                        >
+                          다운
+                        </a>
+                        <button
+                          onClick={() => { setEditingName(f.file_id); setNameDraft(f.file_name) }}
+                          className="text-sm px-3 py-1.5 bg-slate-100 hover:bg-blue-100 rounded-lg text-blue-600 transition-colors"
+                        >
+                          제목수정
+                        </button>
+                        <button
+                          onClick={() => handleDelete(f.file_id, f.file_name)}
+                          className="text-sm px-3 py-1.5 bg-red-50 hover:bg-red-100 rounded-lg text-red-600 transition-colors"
+                        >
+                          삭제
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* 별점 + 원고 메모 */}
+                    <div className="mt-3 flex items-start gap-4 flex-wrap">
+                      <StarRating
+                        value={f.star}
+                        onChange={n => handleStarClick(f.file_id, n)}
+                      />
+
+                      <div className="flex-1 min-w-0">
+                        {editingComment === f.file_id ? (
+                          <input
+                            ref={commentRef}
+                            type="text"
+                            value={commentDraft}
+                            onChange={e => setCommentDraft(e.target.value)}
+                            onBlur={() => handleCommentSave(f.file_id)}
+                            onKeyDown={e => handleCommentKeyDown(e, f.file_id)}
+                            placeholder="원고 메모 입력 (Enter 저장, Esc 취소)…"
+                            maxLength={200}
+                            className="w-full text-sm border border-blue-300 rounded-lg px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-400 bg-white"
+                          />
+                        ) : (
+                          <button
+                            onClick={() => {
+                              setEditingComment(f.file_id)
+                              setCommentDraft(f.comment || '')
+                            }}
+                            className="text-left w-full group"
+                          >
+                            {f.comment ? (
+                              <span className="text-sm text-slate-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-1.5 inline-block group-hover:bg-amber-100 transition-colors">
+                                📝 {f.comment}
+                              </span>
+                            ) : (
+                              <span className="text-sm text-slate-400 group-hover:text-slate-600 transition-colors italic">
+                                + 원고 메모 추가…
+                              </span>
+                            )}
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* AI 요약 아코디언 */}
+                    <SummaryAccordion
+                      summary={f.summary}
+                      isOpen={openSummaries.has(f.file_id)}
+                      onToggle={() => toggleSummary(f.file_id)}
+                    />
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+        </main>
+      </div>
     </div>
   )
 }
