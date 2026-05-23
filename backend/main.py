@@ -16,7 +16,7 @@ from fastapi.responses import StreamingResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from dotenv import load_dotenv
-from pypdf import PdfReader
+import fitz  # PyMuPDF — pypdf 대비 한국어 PDF 호환성 우수
 import numpy as np
 import anthropic
 
@@ -120,14 +120,28 @@ def cosine_search(store: list, query_vec: list[float], n: int) -> list[dict]:
     top  = np.argsort(sims)[::-1][:n]
     return [{"chunk": store[i], "score": float(sims[i])} for i in top]
 
-# ── PDF 처리 ──────────────────────────────────────────────────────────
+# ── PDF 처리 (PyMuPDF — 한국어 UniKS 인코딩 완벽 지원) ───────────────
+FITZ_SKIP = ['개인정보유출주의', '다운로드일시', '제출자:', 'https://', 'scourt']
+
+def _clean_page_text(raw: str) -> str:
+    """법원 워터마크 줄만 제거하고, 실질 내용이 없으면 빈 문자열 반환."""
+    lines = [l.strip() for l in raw.split('\n') if l.strip()]
+    content = [l for l in lines if not any(w in l for w in FITZ_SKIP)]
+    # 워터마크만 있는 페이지는 내용 없음으로 처리
+    if not content or (len('\n'.join(content)) < 30 and not lines):
+        return ''
+    return '\n'.join(content)
+
 def extract_pages(pdf_bytes: bytes) -> list[dict]:
-    reader = PdfReader(io.BytesIO(pdf_bytes))
-    return [
-        {"page": i + 1, "text": (p.extract_text() or "").strip()}
-        for i, p in enumerate(reader.pages)
-        if (p.extract_text() or "").strip()
-    ]
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    result = []
+    for i in range(len(doc)):
+        raw  = doc[i].get_text().strip()
+        text = _clean_page_text(raw)
+        if text:
+            result.append({"page": i + 1, "text": text})
+    doc.close()
+    return result
 
 def make_chunks(fid: str, fname: str, page: int, text: str) -> list[dict]:
     paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()] or [text]

@@ -5,3 +5,6 @@ dockerfilePath = "Dockerfile"
 [deploy]
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 3
+
+# 재배포 시 업로드 데이터 보존 — Railway 대시보드에서 볼륨을 /data 에 마운트해야 함
+# (대시보드 → 서비스 → Volumes 탭 → Add Volume → Mount Path: /data)
