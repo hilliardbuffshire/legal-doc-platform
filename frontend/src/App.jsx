@@ -85,6 +85,9 @@ export default function App() {
   const [uploading,            setUploading]            = useState(false)
   const [uploadMsg,            setUploadMsg]            = useState('')
   const [uploadFailed,         setUploadFailed]         = useState([])
+  const [uploadSkipped,        setUploadSkipped]        = useState([])  // 중복 파일 목록
+  const [uploadLog,            setUploadLog]            = useState([])  // 전체 업로드 이력
+  const [showLog,              setShowLog]              = useState(false)
   const fileInput          = useRef(null)
   const commentRef         = useRef(null)
   const lawyerCommentRef   = useRef(null)
@@ -202,23 +205,43 @@ export default function App() {
   async function handleUpload(e) {
     const selectedFiles = Array.from(e.target.files)
     if (!selectedFiles.length) return
-    setUploading(true); setUploadMsg(''); setUploadFailed([])
-    let ok = 0, skip = 0
-    const failed = []
+    setUploading(true); setUploadMsg(''); setUploadFailed([]); setUploadSkipped([])
+    let ok = 0
+    const failed = [], skipped = []
+    const now = () => new Date().toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' })
+
     for (const f of selectedFiles) {
+      const ts = now()
       try {
         const res = await uploadFile(f)
-        res.skipped ? skip++ : ok++
+        if (res.skipped) {
+          skipped.push({
+            name:         f.name,                          // 업로드 시도한 파일명
+            existingName: res.file?.file_name ?? f.name,   // 시스템에 이미 있는 파일명
+            time:         ts,
+          })
+        } else {
+          ok++
+          setUploadLog(prev => [...prev, { type: 'ok', name: f.name, time: ts }])
+        }
       } catch (err) {
-        failed.push({ name: f.name, reason: err.message })
+        failed.push({ name: f.name, reason: err.message, time: ts })
+        setUploadLog(prev => [...prev, { type: 'fail', name: f.name, reason: err.message, time: ts }])
       }
     }
+
+    // 중복도 로그에 기록
+    skipped.forEach(s =>
+      setUploadLog(prev => [...prev, { type: 'skip', name: s.name, existingName: s.existingName, time: s.time }])
+    )
+
     setUploading(false)
     setUploadFailed(failed)
+    setUploadSkipped(skipped)
     setUploadMsg(
-      failed.length === 0
-        ? `완료: ${ok}개 업로드, ${skip}개 중복`
-        : `완료: ${ok}개 업로드, ${skip}개 중복, ${failed.length}개 실패`
+      `완료: ${ok}개 업로드` +
+      (skipped.length ? `, ${skipped.length}개 중복` : '') +
+      (failed.length  ? `, ${failed.length}개 실패`  : '')
     )
     await loadFiles()
     e.target.value = ''
@@ -278,6 +301,15 @@ export default function App() {
                 {uploadMsg}
               </span>
             )}
+            {uploadLog.length > 0 && (
+              <button
+                onClick={() => setShowLog(v => !v)}
+                className="px-3 py-2 text-sm font-medium text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors"
+                title="업로드 이력 보기"
+              >
+                📋 로그 ({uploadLog.length})
+              </button>
+            )}
             <button
               onClick={() => fileInput.current?.click()}
               disabled={uploading}
@@ -289,17 +321,17 @@ export default function App() {
           </div>
         </div>
 
+        {/* 업로드 실패 배너 */}
         {uploadFailed.length > 0 && (
           <div className="border-t border-red-100 bg-red-50 px-6 py-3 space-y-1">
             <div className="flex items-center justify-between">
-              <p className="text-sm font-semibold text-red-700">⚠️ 업로드 실패한 파일 ({uploadFailed.length}개)</p>
-              <button onClick={() => setUploadFailed([])} className="text-xs text-red-400 hover:text-red-600 transition-colors">
-                닫기 ✕
-              </button>
+              <p className="text-sm font-semibold text-red-700">⚠️ 업로드 실패 ({uploadFailed.length}개)</p>
+              <button onClick={() => setUploadFailed([])} className="text-xs text-red-400 hover:text-red-600 transition-colors">닫기 ✕</button>
             </div>
             <ul className="space-y-1">
               {uploadFailed.map((f, i) => (
                 <li key={i} className="text-sm text-red-800">
+                  <span className="text-xs text-red-400 mr-2">[{f.time}]</span>
                   <span className="font-medium break-all">{f.name}</span>
                   {f.reason && <span className="text-red-500 ml-2 text-xs">— {f.reason}</span>}
                 </li>
@@ -307,7 +339,73 @@ export default function App() {
             </ul>
           </div>
         )}
+
+        {/* 중복 감지 배너 */}
+        {uploadSkipped.length > 0 && (
+          <div className="border-t border-amber-100 bg-amber-50 px-6 py-3 space-y-1">
+            <div className="flex items-center justify-between">
+              <p className="text-sm font-semibold text-amber-700">🔁 중복 파일 — 이미 플랫폼에 존재합니다 ({uploadSkipped.length}개)</p>
+              <button onClick={() => setUploadSkipped([])} className="text-xs text-amber-400 hover:text-amber-600 transition-colors">닫기 ✕</button>
+            </div>
+            <ul className="space-y-1.5">
+              {uploadSkipped.map((f, i) => (
+                <li key={i} className="text-sm text-amber-900">
+                  <span className="text-xs text-amber-500 mr-2">[{f.time}]</span>
+                  <span className="font-medium break-all">'{f.name}'</span>
+                  {f.existingName !== f.name && (
+                    <span className="text-amber-600 ml-2 text-xs">
+                      → 플랫폼 내 파일명: <span className="font-semibold">'{f.existingName}'</span>
+                    </span>
+                  )}
+                  <span className="text-amber-500 ml-2 text-xs">— 제목수정 버튼으로 이름 변경 가능</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
       </header>
+
+      {/* ── 업로드 로그 패널 ── */}
+      {showLog && uploadLog.length > 0 && (
+        <div className="border-t border-slate-200 bg-slate-50 px-6 py-4">
+          <div className="flex items-center justify-between mb-2">
+            <p className="text-sm font-semibold text-slate-600">📋 업로드 이력 (최신순)</p>
+            <div className="flex gap-2">
+              <button
+                onClick={() => setUploadLog([])}
+                className="text-xs text-slate-400 hover:text-red-500 transition-colors"
+              >
+                이력 초기화
+              </button>
+              <button
+                onClick={() => setShowLog(false)}
+                className="text-xs text-slate-400 hover:text-slate-600 transition-colors"
+              >
+                닫기 ✕
+              </button>
+            </div>
+          </div>
+          <ul className="space-y-1 max-h-48 overflow-y-auto">
+            {[...uploadLog].reverse().map((entry, i) => {
+              const icon  = entry.type === 'ok'   ? '✅' : entry.type === 'skip' ? '🔁' : '❌'
+              const color = entry.type === 'ok'   ? 'text-emerald-700' : entry.type === 'skip' ? 'text-amber-700' : 'text-red-700'
+              const label = entry.type === 'ok'   ? '업로드 성공' : entry.type === 'skip' ? '중복 건너뜀' : '업로드 실패'
+              return (
+                <li key={i} className="text-xs flex items-start gap-2">
+                  <span>{icon}</span>
+                  <span className="text-slate-400 shrink-0">[{entry.time}]</span>
+                  <span className={`font-semibold shrink-0 ${color}`}>{label}</span>
+                  <span className="text-slate-700 break-all">{entry.name}</span>
+                  {entry.existingName && entry.existingName !== entry.name && (
+                    <span className="text-amber-600 shrink-0">→ 플랫폼: '{entry.existingName}'</span>
+                  )}
+                  {entry.reason && <span className="text-red-500 shrink-0">— {entry.reason}</span>}
+                </li>
+              )
+            })}
+          </ul>
+        </div>
+      )}
 
       {/* ── 사이드바 + 메인 ── */}
       <div className="flex">
