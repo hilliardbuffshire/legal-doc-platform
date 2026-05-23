@@ -578,6 +578,12 @@ export default function App() {
                         다운
                       </a>
                       <button
+                        onClick={() => { setEditingName(f.file_id); setNameDraft(f.file_name) }}
+                        className="text-sm px-3 py-1.5 bg-slate-100 hover:bg-blue-100 rounded-lg text-blue-600 transition-colors"
+                      >
+                        제목수정
+                      </button>
+                      <button
                         onClick={() => handleDelete(f.file_id, f.file_name)}
                         className="text-sm px-3 py-1.5 bg-red-50 hover:bg-red-100 rounded-lg text-red-600 transition-colors"
                       >

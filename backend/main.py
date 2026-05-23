@@ -220,12 +220,13 @@ async def generate_summary(pages: list[dict]) -> str:
     try:
         msg = await ai.messages.create(
             model=SUMMARY_MODEL,
-            max_tokens=250,
+            max_tokens=500,
             messages=[{
                 "role": "user",
                 "content": (
-                    "다음 법률 문서의 핵심 내용을 한국어로 3문장 이내로 간결하게 요약해 주세요. "
-                    "문서 종류, 주요 주장, 핵심 결론을 포함하세요.\n\n" + preview
+                    "다음 법률 문서의 핵심 내용을 한국어로 3문장으로 요약해 주세요. "
+                    "문서 종류, 주요 주장, 핵심 결론을 포함하고, 반드시 마침표로 끝나는 완전한 문장으로 작성하세요.\n\n"
+                    + preview
                 ),
             }],
         )
