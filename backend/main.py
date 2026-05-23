@@ -16,7 +16,8 @@ from fastapi.responses import StreamingResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from dotenv import load_dotenv
-import fitz  # PyMuPDF — pypdf 대비 한국어 PDF 호환성 우수
+import fitz  # PyMuPDF — 한국어 UniKS 인코딩 지원
+from pypdf import PdfReader  # fitz 폴백용
 import numpy as np
 import anthropic
 
@@ -120,28 +121,63 @@ def cosine_search(store: list, query_vec: list[float], n: int) -> list[dict]:
     top  = np.argsort(sims)[::-1][:n]
     return [{"chunk": store[i], "score": float(sims[i])} for i in top]
 
-# ── PDF 처리 (PyMuPDF — 한국어 UniKS 인코딩 완벽 지원) ───────────────
-FITZ_SKIP = ['개인정보유출주의', '다운로드일시', '제출자:', 'https://', 'scourt']
+# ── PDF 처리 ──────────────────────────────────────────────────────────
+# 법원 시스템 워터마크 (이 키워드만 있는 페이지는 내용 없음으로 처리)
+_WATERMARK = ['개인정보유출주의', '다운로드일시', '제출자:', 'scourt.go.kr']
 
-def _clean_page_text(raw: str) -> str:
-    """법원 워터마크 줄만 제거하고, 실질 내용이 없으면 빈 문자열 반환."""
+def _clean(raw: str) -> str:
+    """워터마크 전용 줄 제거. 실질 내용이 한 줄이라도 있으면 그대로 반환."""
     lines = [l.strip() for l in raw.split('\n') if l.strip()]
-    content = [l for l in lines if not any(w in l for w in FITZ_SKIP)]
-    # 워터마크만 있는 페이지는 내용 없음으로 처리
-    if not content or (len('\n'.join(content)) < 30 and not lines):
-        return ''
-    return '\n'.join(content)
+    content = [l for l in lines if not any(w in l for w in _WATERMARK)]
+    return '\n'.join(content) if content else ''
 
-def extract_pages(pdf_bytes: bytes) -> list[dict]:
+def _extract_fitz(pdf_bytes: bytes) -> list[dict]:
+    """fitz(PyMuPDF) 로 페이지별 텍스트 추출."""
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     result = []
     for i in range(len(doc)):
-        raw  = doc[i].get_text().strip()
-        text = _clean_page_text(raw)
+        raw = doc[i].get_text().strip()
+        text = _clean(raw)
         if text:
             result.append({"page": i + 1, "text": text})
     doc.close()
     return result
+
+def _extract_pypdf(pdf_bytes: bytes) -> list[dict]:
+    """pypdf 폴백 — fitz가 실패한 경우 사용."""
+    try:
+        reader = PdfReader(io.BytesIO(pdf_bytes))
+        result = []
+        for i, p in enumerate(reader.pages):
+            raw = (p.extract_text() or "").strip()
+            text = _clean(raw)
+            if text:
+                result.append({"page": i + 1, "text": text})
+        return result
+    except Exception:
+        return []
+
+def _page_count(pdf_bytes: bytes) -> int:
+    """실제 PDF 총 페이지 수 (텍스트 유무 무관)."""
+    try:
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        n = len(doc)
+        doc.close()
+        return n
+    except Exception:
+        return 0
+
+def extract_pages(pdf_bytes: bytes) -> tuple[list[dict], bool]:
+    """
+    텍스트 페이지 목록과 스캔 여부를 반환.
+    fitz 우선 → 결과 없으면 pypdf 폴백.
+    둘 다 실패해도 빈 리스트 반환 (업로드는 허용).
+    """
+    pages = _extract_fitz(pdf_bytes)
+    if not pages:
+        pages = _extract_pypdf(pdf_bytes)
+    is_scanned = len(pages) == 0
+    return pages, is_scanned
 
 def make_chunks(fid: str, fname: str, page: int, text: str) -> list[dict]:
     paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()] or [text]
@@ -234,38 +270,38 @@ async def upload(file: UploadFile = File(...)):
     if fid in meta:
         return {"skipped": True, "file": meta[fid], "message": "이미 처리된 파일입니다."}
 
-    pages = extract_pages(data)
-    if not pages:
-        raise HTTPException(400, "텍스트를 추출할 수 없습니다. (이미지 스캔 PDF)")
+    pages, is_scanned = extract_pages(data)
 
+    # 텍스트 추출 실패(스캔 PDF)여도 업로드 허용 — 열람은 가능
     (UPLOAD_DIR / f"{fid}.pdf").write_bytes(data)
 
     all_chunks = []
-    for p in pages:
-        all_chunks.extend(make_chunks(fid, file.filename, p["page"], p["text"]))
+    if pages:
+        for p in pages:
+            all_chunks.extend(make_chunks(fid, file.filename, p["page"], p["text"]))
+        store = load_store()
+        existing_ids = {c["id"] for c in store}
+        for c in all_chunks:
+            if c["id"] not in existing_ids:
+                c["embedding"] = await embed(c["text"])
+                store.append(c)
+        save_store(store)
 
-    store = load_store()
-    existing_ids = {c["id"] for c in store}
-    for c in all_chunks:
-        if c["id"] not in existing_ids:
-            c["embedding"] = await embed(c["text"])
-            store.append(c)
-    save_store(store)
-
-    # AI 요약 생성 (실패해도 업로드는 계속)
-    summary = await generate_summary(pages)
+    summary = (await generate_summary(pages)) if pages else "이미지 스캔 PDF — 텍스트 검색 불가, 열람만 가능합니다."
 
     info = {
         "file_id":     fid,
         "file_name":   file.filename,
-        "total_pages": len(pages),
+        "total_pages": _page_count(data),
         "chunks":      len(all_chunks),
+        "is_scanned":  is_scanned,
     }
     meta[fid] = info
     save_meta(meta)
     db_upsert(fid, summary=summary)
 
-    return {"skipped": False, "file": info, "message": f"업로드 완료 ({len(all_chunks)}개 청크)"}
+    msg = f"업로드 완료 ({len(all_chunks)}개 청크)" if not is_scanned else "업로드 완료 (이미지 스캔 — 검색 불가, 열람 가능)"
+    return {"skipped": False, "file": info, "message": msg}
 
 # ── GET /api/files/{fid}/pdf ──────────────────────────────────────────
 @app.get("/api/files/{fid}/pdf")

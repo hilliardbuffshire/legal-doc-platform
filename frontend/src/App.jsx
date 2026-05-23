@@ -554,7 +554,12 @@ export default function App() {
                           </button>
                         </div>
                       )}
-                      <p className="text-sm text-slate-400 mt-0.5">{f.total_pages}페이지 · {f.chunks}청크</p>
+                      <p className="text-sm text-slate-400 mt-0.5">
+                        {f.total_pages}페이지 · {f.chunks}청크
+                        {f.is_scanned && (
+                          <span className="ml-2 text-xs text-orange-500 font-medium">📷 이미지 스캔 (검색 불가)</span>
+                        )}
+                      </p>
                     </div>
 
                     <div className="flex gap-2 shrink-0 mt-0.5">
