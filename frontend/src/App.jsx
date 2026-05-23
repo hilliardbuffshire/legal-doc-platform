@@ -1,8 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react'
 import {
   getFiles, uploadFile, deleteFile,
-  getPdfUrl, search, streamChat,
-  patchStar, patchComment, patchName,
+  getPdfUrl, patchStar, patchComment, patchLawyerComment, patchName,
 } from './api'
 
 // 파일명에서 번호·종류·제출자 파싱
@@ -69,30 +68,27 @@ function SummaryAccordion({ summary, isOpen, onToggle }) {
 
 // ── 메인 앱 ──────────────────────────────────────────────────────────
 export default function App() {
-  const [files,          setFiles]          = useState([])
-  const [displayIds,     setDisplayIds]     = useState([])   // 안정적인 정렬 순서 (별점 변경 시 유지)
-  const [query,          setQuery]          = useState('')
-  const [searchResults,  setSearchResults]  = useState([])
-  const [searching,      setSearching]      = useState(false)
-  const [aiText,         setAiText]         = useState('')
-  const [aiSources,      setAiSources]      = useState([])
-  const [aiLoading,      setAiLoading]      = useState(false)
-  const [aiOpen,         setAiOpen]         = useState(true)
-  const [filterType,     setFilterType]     = useState('')
-  const [filterSender,   setFilterSender]   = useState('')
-  const [filterMinStar,  setFilterMinStar]  = useState(0)
-  const [sortBy,         setSortBy]         = useState('updated_at')
-  const [openSummaries,  setOpenSummaries]  = useState(new Set())
-  const [editingComment, setEditingComment] = useState(null)
-  const [commentDraft,   setCommentDraft]   = useState('')
-  const [editingName,    setEditingName]    = useState(null)
-  const [nameDraft,      setNameDraft]      = useState('')
-  const [uploading,      setUploading]      = useState(false)
-  const [uploadMsg,      setUploadMsg]      = useState('')
-  const [uploadFailed,   setUploadFailed]   = useState([])
-  const fileInput  = useRef(null)
-  const commentRef = useRef(null)
-  const nameRef    = useRef(null)
+  const [files,                setFiles]                = useState([])
+  const [displayIds,           setDisplayIds]           = useState([])
+  const [query,                setQuery]                = useState('')
+  const [filterType,           setFilterType]           = useState('')
+  const [filterSender,         setFilterSender]         = useState('')
+  const [filterMinStar,        setFilterMinStar]        = useState(0)
+  const [sortBy,               setSortBy]               = useState('updated_at')
+  const [openSummaries,        setOpenSummaries]        = useState(new Set())
+  const [editingComment,       setEditingComment]       = useState(null)
+  const [commentDraft,         setCommentDraft]         = useState('')
+  const [editingLawyerComment, setEditingLawyerComment] = useState(null)
+  const [lawyerCommentDraft,   setLawyerCommentDraft]   = useState('')
+  const [editingName,          setEditingName]          = useState(null)
+  const [nameDraft,            setNameDraft]            = useState('')
+  const [uploading,            setUploading]            = useState(false)
+  const [uploadMsg,            setUploadMsg]            = useState('')
+  const [uploadFailed,         setUploadFailed]         = useState([])
+  const fileInput          = useRef(null)
+  const commentRef         = useRef(null)
+  const lawyerCommentRef   = useRef(null)
+  const nameRef            = useRef(null)
 
   useEffect(() => { loadFiles() }, [])
 
@@ -101,13 +97,17 @@ export default function App() {
   }, [editingComment])
 
   useEffect(() => {
+    if (editingLawyerComment && lawyerCommentRef.current) lawyerCommentRef.current.focus()
+  }, [editingLawyerComment])
+
+  useEffect(() => {
     if (editingName && nameRef.current) {
       nameRef.current.focus()
       nameRef.current.select()
     }
   }, [editingName])
 
-  // ── 정렬 헬퍼: 파일 목록을 정렬하고 ID 배열 반환 ─────────────────
+  // ── 정렬 헬퍼 ────────────────────────────────────────────────────
   function computeSortedIds(fileList, sortByVal) {
     return fileList
       .map(f => ({ ...f, ...parseMeta(f.file_name) }))
@@ -115,7 +115,7 @@ export default function App() {
         if (sortByVal === 'star_desc') return (b.star - a.star) || (b.updated_at - a.updated_at)
         if (sortByVal === 'star_asc')  return (a.star - b.star) || (b.updated_at - a.updated_at)
         if (sortByVal === 'num')       return (Number(a.num) || 999) - (Number(b.num) || 999)
-        return b.updated_at - a.updated_at  // 'updated_at' (기본)
+        return b.updated_at - a.updated_at
       })
       .map(f => f.file_id)
   }
@@ -128,24 +128,20 @@ export default function App() {
     } catch { /* silent */ }
   }
 
-  // ── 정렬 기준 변경 (명시적 사용자 액션만 재정렬) ─────────────────
   function handleSortChange(newSortBy) {
     setSortBy(newSortBy)
     setDisplayIds(computeSortedIds(files, newSortBy))
   }
 
-  // ── 별점 클릭 (낙관적 업데이트, 순서 변경 없음) ──────────────────
+  // ── 별점 (순서 불변) ──────────────────────────────────────────────
   async function handleStarClick(fid, n) {
     const cur  = files.find(f => f.file_id === fid)?.star ?? 0
     const next = cur === n ? 0 : n
-    // updated_at 갱신 없음 → displayIds 순서 유지
-    setFiles(fs => fs.map(f =>
-      f.file_id === fid ? { ...f, star: next } : f
-    ))
-    try { await patchStar(fid, next) } catch { /* 실패 시 다음 loadFiles에서 복구 */ }
+    setFiles(fs => fs.map(f => f.file_id === fid ? { ...f, star: next } : f))
+    try { await patchStar(fid, next) } catch { /* silent */ }
   }
 
-  // ── 댓글 저장 ─────────────────────────────────────────────────────
+  // ── 원고 메모 ─────────────────────────────────────────────────────
   async function handleCommentSave(fid) {
     const comment = commentDraft.trim()
     setEditingComment(null)
@@ -160,13 +156,30 @@ export default function App() {
     if (e.key === 'Escape') { setEditingComment(null) }
   }
 
+  // ── 변호사 메모 ───────────────────────────────────────────────────
+  async function handleLawyerCommentSave(fid) {
+    const lawyer_comment = lawyerCommentDraft.trim()
+    setEditingLawyerComment(null)
+    setFiles(fs => fs.map(f =>
+      f.file_id === fid ? { ...f, lawyer_comment, updated_at: Date.now() / 1000 } : f
+    ))
+    try { await patchLawyerComment(fid, lawyer_comment) } catch { /* silent */ }
+  }
+
+  function handleLawyerCommentKeyDown(e, fid) {
+    if (e.key === 'Enter') { e.preventDefault(); handleLawyerCommentSave(fid) }
+    if (e.key === 'Escape') { setEditingLawyerComment(null) }
+  }
+
   // ── 제목 저장 ─────────────────────────────────────────────────────
   async function handleNameSave(fid) {
     const name = nameDraft.trim()
     if (!name) { setEditingName(null); return }
     setEditingName(null)
     setFiles(fs => fs.map(f =>
-      f.file_id === fid ? { ...f, file_name: name.endsWith('.pdf') ? name : name + '.pdf', updated_at: Date.now() / 1000 } : f
+      f.file_id === fid
+        ? { ...f, file_name: name.endsWith('.pdf') ? name : name + '.pdf', updated_at: Date.now() / 1000 }
+        : f
     ))
     try { await patchName(fid, name) } catch { await loadFiles() }
   }
@@ -183,33 +196,6 @@ export default function App() {
       next.has(fid) ? next.delete(fid) : next.add(fid)
       return next
     })
-  }
-
-  // ── 검색 ──────────────────────────────────────────────────────────
-  async function handleSearch(e) {
-    e.preventDefault()
-    if (!query.trim()) return
-    setAiText(''); setAiSources([]); setSearchResults([])
-    setSearching(true); setAiLoading(true); setAiOpen(true)
-    try {
-      try {
-        const res = await search(query)
-        setSearchResults(res.results || [])
-      } finally {
-        setSearching(false)
-      }
-      let buf = ''
-      for await (const ev of streamChat(query)) {
-        if (ev.type === 'text')    { buf += ev.content; setAiText(buf) }
-        if (ev.type === 'sources') setAiSources(ev.sources)
-        if (ev.type === 'done')    break
-      }
-    } catch (err) {
-      setAiText('오류: ' + err.message)
-      setSearching(false)
-    } finally {
-      setAiLoading(false)
-    }
   }
 
   // ── 업로드 ────────────────────────────────────────────────────────
@@ -249,7 +235,7 @@ export default function App() {
     }
   }
 
-  // ── 사이드바에서 카드로 스크롤 ───────────────────────────────────
+  // ── 사이드바 → 카드 스크롤 ───────────────────────────────────────
   function scrollToCard(fid) {
     const el = document.getElementById(`fc-${fid}`)
     if (!el) return
@@ -264,7 +250,7 @@ export default function App() {
   const types       = [...new Set(allMeta.map(f => f.docType).filter(Boolean))].sort()
   const senders     = [...new Set(allMeta.map(f => f.sender).filter(Boolean))].sort()
 
-  // visible: displayIds 순서 고정 + 현재 필터만 적용 (별점 변경 시 순서 불변)
+  // visible: displayIds 순서 고정 + 현재 필터 적용
   const visible = displayIds
     .map(id => allMetaById[id])
     .filter(f => f &&
@@ -274,7 +260,6 @@ export default function App() {
       (filterMinStar === 0 || f.star >= filterMinStar)
     )
 
-  // 사이드바: 항상 번호순 정렬
   const sidebarList = [...allMeta].sort((a, b) => (Number(a.num) || 999) - (Number(b.num) || 999))
   const visibleIds  = new Set(visible.map(f => f.file_id))
   const hasFilter   = filterType || filterSender || filterMinStar > 0
@@ -304,15 +289,11 @@ export default function App() {
           </div>
         </div>
 
-        {/* 실패 목록 */}
         {uploadFailed.length > 0 && (
           <div className="border-t border-red-100 bg-red-50 px-6 py-3 space-y-1">
             <div className="flex items-center justify-between">
               <p className="text-sm font-semibold text-red-700">⚠️ 업로드 실패한 파일 ({uploadFailed.length}개)</p>
-              <button
-                onClick={() => setUploadFailed([])}
-                className="text-xs text-red-400 hover:text-red-600 transition-colors"
-              >
+              <button onClick={() => setUploadFailed([])} className="text-xs text-red-400 hover:text-red-600 transition-colors">
                 닫기 ✕
               </button>
             </div>
@@ -320,9 +301,7 @@ export default function App() {
               {uploadFailed.map((f, i) => (
                 <li key={i} className="text-sm text-red-800">
                   <span className="font-medium break-all">{f.name}</span>
-                  {f.reason && (
-                    <span className="text-red-500 ml-2 text-xs">— {f.reason}</span>
-                  )}
+                  {f.reason && <span className="text-red-500 ml-2 text-xs">— {f.reason}</span>}
                 </li>
               ))}
             </ul>
@@ -330,14 +309,14 @@ export default function App() {
         )}
       </header>
 
-      {/* ── 사이드바 + 메인 레이아웃 ── */}
+      {/* ── 사이드바 + 메인 ── */}
       <div className="flex">
 
-        {/* ── 좌측 파일 네비게이션 사이드바 ── */}
-        <nav className="hidden lg:block w-56 shrink-0 border-r border-slate-200 bg-white">
+        {/* ── 좌측 파일 네비게이션 (w-72 = 288px, 텍스트 크기 확대) ── */}
+        <nav className="hidden lg:block w-72 shrink-0 border-r border-slate-200 bg-white">
           <div className="sticky top-[65px] overflow-y-auto" style={{ height: 'calc(100vh - 65px)' }}>
-            <div className="px-3 pt-4 pb-2 border-b border-slate-100">
-              <p className="text-xs font-semibold text-slate-400 uppercase tracking-widest">
+            <div className="px-4 pt-4 pb-3 border-b border-slate-100">
+              <p className="text-sm font-bold text-slate-500 uppercase tracking-wide">
                 전체 목록 ({sidebarList.length})
               </p>
             </div>
@@ -346,17 +325,19 @@ export default function App() {
                 <li key={f.file_id}>
                   <button
                     onClick={() => scrollToCard(f.file_id)}
-                    className={`w-full text-left px-2 py-1.5 mx-1 flex items-start gap-1.5 hover:bg-blue-50 rounded-lg transition-colors ${
+                    className={`w-full text-left px-3 py-2 flex items-start gap-2 hover:bg-blue-50 transition-colors rounded-lg mx-1 ${
                       visibleIds.has(f.file_id) ? '' : 'opacity-35'
                     }`}
                     style={{ width: 'calc(100% - 8px)' }}
                     title={f.file_name}
                   >
-                    <span className="shrink-0 text-xs font-bold text-blue-600 leading-tight pt-0.5">
+                    <span className="shrink-0 text-sm font-bold text-blue-600 leading-snug pt-0.5 min-w-[2.5rem]">
                       [{f.num ?? '?'}]
                     </span>
-                    <span className="text-xs text-slate-600 leading-tight flex-1 overflow-hidden"
-                          style={{ display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
+                    <span
+                      className="text-sm text-slate-700 leading-snug flex-1 overflow-hidden"
+                      style={{ display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}
+                    >
                       {f.docType || f.file_name}
                     </span>
                   </button>
@@ -394,137 +375,27 @@ export default function App() {
             </div>
           </section>
 
-          {/* ── 검색창 ── */}
+          {/* ── 검색창 (파일 탐색기 방식 — 실시간 제목 필터링) ── */}
           <section>
-            <form onSubmit={handleSearch} className="flex gap-2">
+            <div className="relative">
+              <span className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 text-lg pointer-events-none">🔍</span>
               <input
                 type="text"
                 value={query}
                 onChange={e => setQuery(e.target.value)}
-                placeholder="제목 검색 (예: 준비서면) — 입력 즉시 목록 필터링 · 검색 버튼으로 AI 분석"
-                className="flex-1 px-4 py-3 border rounded-xl text-base focus:outline-none focus:ring-2 focus:ring-blue-400 bg-white shadow-sm"
+                placeholder="제목 검색 (예: 준비서면) — 입력 즉시 목록 필터링"
+                className="w-full pl-11 pr-4 py-3 border rounded-xl text-base focus:outline-none focus:ring-2 focus:ring-blue-400 bg-white shadow-sm"
               />
-              <button
-                type="submit"
-                disabled={aiLoading || !query.trim()}
-                className="px-6 py-3 bg-blue-600 text-white text-base font-semibold rounded-xl hover:bg-blue-700 disabled:opacity-50 shadow-sm transition-colors"
-              >
-                {aiLoading ? '분석 중…' : '검색'}
-              </button>
-            </form>
-          </section>
-
-          {/* ── 벡터 검색 결과 (즉시 표시) ── */}
-          {(searchResults.length > 0 || searching) && (
-            <section className="bg-white rounded-2xl border-2 border-blue-300 shadow-sm p-5 space-y-3">
-              <div className="flex items-center gap-2">
-                <span>📋</span>
-                <span className="font-bold text-slate-800">관련 문서 찾기 결과</span>
-                <span className="text-sm text-slate-400">— &ldquo;{query}&rdquo;</span>
-              </div>
-
-              {searching ? (
-                <p className="text-sm text-blue-500 animate-pulse">문서 검색 중…</p>
-              ) : (
-                <>
-                  {searchResults[0] && (() => {
-                    const top = parseMeta(searchResults[0].file_name)
-                    return (
-                      <div className="bg-blue-50 border border-blue-200 rounded-xl px-4 py-3 flex items-center gap-3">
-                        <span className="text-2xl font-black text-blue-700">#{top.num}번</span>
-                        <div className="flex-1 min-w-0">
-                          <p className="font-semibold text-blue-800">{top.docType}</p>
-                          {top.sender && <p className="text-sm text-blue-600">{top.sender}</p>}
-                        </div>
-                        <span className="text-sm font-semibold text-emerald-600 shrink-0">
-                          관련도 {Math.round(searchResults[0].score * 100)}%
-                        </span>
-                        <a
-                          href={getPdfUrl(searchResults[0].file_id)}
-                          target="_blank" rel="noreferrer"
-                          className="text-sm px-3 py-1.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 shrink-0 transition-colors"
-                        >
-                          열기
-                        </a>
-                      </div>
-                    )
-                  })()}
-
-                  {searchResults.length > 1 && (
-                    <ul className="divide-y divide-slate-100">
-                      {searchResults.slice(1).map((r, i) => {
-                        const m = parseMeta(r.file_name)
-                        return (
-                          <li key={r.file_id} className="flex items-center gap-3 py-2.5">
-                            <span className="text-sm text-slate-400 w-5 shrink-0">{i + 2}</span>
-                            {m.num && (
-                              <span className="text-sm font-bold text-blue-700 bg-blue-50 border border-blue-200 rounded px-1.5 py-0.5 shrink-0">
-                                #{m.num}번
-                              </span>
-                            )}
-                            <span className="text-slate-700 flex-1 min-w-0 truncate">{m.docType || r.file_name}</span>
-                            <span className="text-sm text-slate-400 shrink-0">{Math.round(r.score * 100)}%</span>
-                            <a
-                              href={getPdfUrl(r.file_id)}
-                              target="_blank" rel="noreferrer"
-                              className="text-sm px-2 py-1 bg-slate-100 hover:bg-slate-200 rounded text-slate-600 shrink-0 transition-colors"
-                            >
-                              열기
-                            </a>
-                          </li>
-                        )
-                      })}
-                    </ul>
-                  )}
-                </>
-              )}
-            </section>
-          )}
-
-          {/* ── AI 응답 (아코디언) ── */}
-          {(aiText || aiLoading) && (
-            <section className="bg-white rounded-2xl border shadow-sm overflow-hidden">
-              <button
-                onClick={() => setAiOpen(o => !o)}
-                className="w-full flex items-center justify-between px-6 py-4 hover:bg-slate-50 transition-colors"
-              >
-                <div className="flex items-center gap-2 font-semibold text-slate-700">
-                  <span>🤖</span><span>AI 분석 결과</span>
-                  {aiLoading && <span className="text-blue-500 animate-pulse ml-2 font-normal text-sm">생성 중…</span>}
-                </div>
-                <span
-                  className="text-slate-400 text-sm transition-transform duration-200"
-                  style={{ transform: aiOpen ? 'rotate(90deg)' : 'rotate(0deg)' }}
+              {query && (
+                <button
+                  onClick={() => setQuery('')}
+                  className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 transition-colors text-sm"
                 >
-                  ▶
-                </span>
-              </button>
-
-              <div className={`summary-body${aiOpen ? ' open' : ''}`}>
-                <div>
-                  <div className="px-6 pb-6 space-y-4 border-t">
-                    <p className="text-slate-700 whitespace-pre-wrap leading-relaxed pt-4">{aiText}</p>
-                    {aiSources.length > 0 && (
-                      <div className="pt-2 border-t space-y-1">
-                        <p className="text-sm font-semibold text-slate-500">📎 참조 문서</p>
-                        {aiSources.map((s, i) => (
-                          <a
-                            key={i}
-                            href={getPdfUrl(s.file_id)}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="block text-sm text-blue-600 hover:underline truncate"
-                          >
-                            {s.file_name} · {s.page}페이지
-                          </a>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                </div>
-              </div>
-            </section>
-          )}
+                  ✕
+                </button>
+              )}
+            </div>
+          </section>
 
           {/* ── 문서 목록 ── */}
           <section className="space-y-3">
@@ -533,7 +404,6 @@ export default function App() {
                 전체 문서 {visible.length}/{files.length}건
               </h2>
               <div className="flex gap-2 flex-wrap items-center">
-                {/* 정렬 */}
                 <select
                   value={sortBy}
                   onChange={e => handleSortChange(e.target.value)}
@@ -545,7 +415,6 @@ export default function App() {
                   <option value="num">번호순</option>
                 </select>
 
-                {/* 최소 별점 필터 */}
                 <select
                   value={filterMinStar}
                   onChange={e => setFilterMinStar(Number(e.target.value))}
@@ -559,7 +428,6 @@ export default function App() {
                   <option value={5}>★★★★★ 5점만</option>
                 </select>
 
-                {/* 종류 필터 */}
                 <select
                   value={filterType}
                   onChange={e => setFilterType(e.target.value)}
@@ -569,7 +437,6 @@ export default function App() {
                   {types.map(t => <option key={t} value={t}>{t}</option>)}
                 </select>
 
-                {/* 제출자 필터 */}
                 <select
                   value={filterSender}
                   onChange={e => setFilterSender(e.target.value)}
@@ -604,7 +471,7 @@ export default function App() {
                     id={`fc-${f.file_id}`}
                     className="bg-white rounded-2xl border shadow-sm px-5 py-4 hover:border-blue-300 transition-colors"
                   >
-                    {/* 윗줄: 배지들 + 열기/다운/삭제 버튼 */}
+                    {/* 윗줄: 배지 + 버튼 */}
                     <div className="flex items-start justify-between gap-4">
                       <div className="min-w-0 flex-1">
                         <div className="flex flex-wrap gap-1.5 items-center mb-1.5">
@@ -624,6 +491,7 @@ export default function App() {
                             </span>
                           )}
                         </div>
+
                         {editingName === f.file_id ? (
                           <input
                             ref={nameRef}
@@ -646,10 +514,11 @@ export default function App() {
                             </button>
                           </div>
                         )}
+
                         <p className="text-sm text-slate-400 mt-0.5">
-                          {f.total_pages}페이지 · {f.chunks}청크
+                          {f.total_pages}페이지
                           {f.is_scanned && (
-                            <span className="ml-2 text-xs text-orange-500 font-medium">📷 이미지 스캔 (검색 불가)</span>
+                            <span className="ml-2 text-xs text-orange-500 font-medium">📷 이미지 스캔</span>
                           )}
                         </p>
                       </div>
@@ -657,8 +526,7 @@ export default function App() {
                       <div className="flex gap-2 shrink-0 mt-0.5">
                         <a
                           href={getPdfUrl(f.file_id)}
-                          target="_blank"
-                          rel="noreferrer"
+                          target="_blank" rel="noreferrer"
                           className="text-sm px-3 py-1.5 bg-slate-100 hover:bg-slate-200 rounded-lg text-slate-700 transition-colors"
                         >
                           열기
@@ -684,46 +552,78 @@ export default function App() {
                       </div>
                     </div>
 
-                    {/* 별점 + 원고 메모 */}
-                    <div className="mt-3 flex items-start gap-4 flex-wrap">
+                    {/* 별점 */}
+                    <div className="mt-3">
                       <StarRating
                         value={f.star}
                         onChange={n => handleStarClick(f.file_id, n)}
                       />
+                    </div>
 
-                      <div className="flex-1 min-w-0">
-                        {editingComment === f.file_id ? (
-                          <input
-                            ref={commentRef}
-                            type="text"
-                            value={commentDraft}
-                            onChange={e => setCommentDraft(e.target.value)}
-                            onBlur={() => handleCommentSave(f.file_id)}
-                            onKeyDown={e => handleCommentKeyDown(e, f.file_id)}
-                            placeholder="원고 메모 입력 (Enter 저장, Esc 취소)…"
-                            maxLength={200}
-                            className="w-full text-sm border border-blue-300 rounded-lg px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-400 bg-white"
-                          />
-                        ) : (
-                          <button
-                            onClick={() => {
-                              setEditingComment(f.file_id)
-                              setCommentDraft(f.comment || '')
-                            }}
-                            className="text-left w-full group"
-                          >
-                            {f.comment ? (
-                              <span className="text-sm text-slate-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-1.5 inline-block group-hover:bg-amber-100 transition-colors">
-                                📝 {f.comment}
-                              </span>
-                            ) : (
-                              <span className="text-sm text-slate-400 group-hover:text-slate-600 transition-colors italic">
-                                + 원고 메모 추가…
-                              </span>
-                            )}
-                          </button>
-                        )}
-                      </div>
+                    {/* 원고 메모 */}
+                    <div className="mt-2">
+                      <span className="text-xs font-bold text-amber-700 mb-1 inline-block">[원고 메모]</span>
+                      {editingComment === f.file_id ? (
+                        <input
+                          ref={commentRef}
+                          type="text"
+                          value={commentDraft}
+                          onChange={e => setCommentDraft(e.target.value)}
+                          onBlur={() => handleCommentSave(f.file_id)}
+                          onKeyDown={e => handleCommentKeyDown(e, f.file_id)}
+                          placeholder="원고 메모 입력 (Enter 저장, Esc 취소)…"
+                          maxLength={200}
+                          className="w-full text-sm border border-amber-300 rounded-lg px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-amber-300 bg-amber-50"
+                        />
+                      ) : (
+                        <button
+                          onClick={() => { setEditingComment(f.file_id); setCommentDraft(f.comment || '') }}
+                          className="text-left w-full group block"
+                        >
+                          {f.comment ? (
+                            <span className="text-sm text-slate-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-1.5 inline-block group-hover:bg-amber-100 transition-colors">
+                              📝 {f.comment}
+                            </span>
+                          ) : (
+                            <span className="text-sm text-slate-400 group-hover:text-amber-600 transition-colors italic">
+                              + 원고 메모 추가…
+                            </span>
+                          )}
+                        </button>
+                      )}
+                    </div>
+
+                    {/* 변호사 메모 */}
+                    <div className="mt-2">
+                      <span className="text-xs font-bold text-violet-700 mb-1 inline-block">[변호사 메모]</span>
+                      {editingLawyerComment === f.file_id ? (
+                        <input
+                          ref={lawyerCommentRef}
+                          type="text"
+                          value={lawyerCommentDraft}
+                          onChange={e => setLawyerCommentDraft(e.target.value)}
+                          onBlur={() => handleLawyerCommentSave(f.file_id)}
+                          onKeyDown={e => handleLawyerCommentKeyDown(e, f.file_id)}
+                          placeholder="변호사 메모 입력 (Enter 저장, Esc 취소)…"
+                          maxLength={200}
+                          className="w-full text-sm border border-violet-300 rounded-lg px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-violet-300 bg-violet-50"
+                        />
+                      ) : (
+                        <button
+                          onClick={() => { setEditingLawyerComment(f.file_id); setLawyerCommentDraft(f.lawyer_comment || '') }}
+                          className="text-left w-full group block"
+                        >
+                          {f.lawyer_comment ? (
+                            <span className="text-sm text-slate-700 bg-violet-50 border border-violet-200 rounded-lg px-3 py-1.5 inline-block group-hover:bg-violet-100 transition-colors">
+                              ⚖️ {f.lawyer_comment}
+                            </span>
+                          ) : (
+                            <span className="text-sm text-slate-400 group-hover:text-violet-600 transition-colors italic">
+                              + 변호사 메모 추가…
+                            </span>
+                          )}
+                        </button>
+                      )}
                     </div>
 
                     {/* AI 요약 아코디언 */}

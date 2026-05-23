@@ -54,35 +54,12 @@ export async function patchComment(fid, comment) {
   return r.json()
 }
 
-export async function search(q) {
-  const r = await fetch(`${BASE}/api/search?q=${encodeURIComponent(q)}`)
-  if (!r.ok) throw new Error(await r.text())
-  return r.json()
-}
-
-export async function* streamChat(question) {
-  const r = await fetch(`${BASE}/api/chat`, {
-    method: 'POST',
+export async function patchLawyerComment(fid, lawyer_comment) {
+  const r = await fetch(`${BASE}/api/files/${fid}/lawyer_comment`, {
+    method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ question }),
+    body: JSON.stringify({ lawyer_comment }),
   })
   if (!r.ok) throw new Error(await r.text())
-
-  const reader = r.body.getReader()
-  const dec    = new TextDecoder()
-  let buf      = ''
-
-  while (true) {
-    const { value, done } = await reader.read()
-    if (done) break
-    buf += dec.decode(value, { stream: true })
-    const lines = buf.split('\n')
-    buf = lines.pop()
-    for (const line of lines) {
-      if (line.startsWith('data: ')) {
-        const payload = line.slice(6).trim()
-        if (payload) yield JSON.parse(payload)
-      }
-    }
-  }
+  return r.json()
 }
