@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react'
 import {
   getFiles, uploadFile, deleteFile,
   getPdfUrl, search, streamChat,
-  patchStar, patchComment,
+  patchStar, patchComment, patchName,
 } from './api'
 
 // 파일명에서 번호·종류·제출자 파싱
@@ -83,18 +83,28 @@ export default function App() {
   const [openSummaries,  setOpenSummaries]  = useState(new Set())
   const [editingComment, setEditingComment] = useState(null)
   const [commentDraft,   setCommentDraft]   = useState('')
+  const [editingName,    setEditingName]    = useState(null)
+  const [nameDraft,      setNameDraft]      = useState('')
   const [uploading,      setUploading]      = useState(false)
   const [uploadMsg,      setUploadMsg]      = useState('')
   const [uploadFailed,   setUploadFailed]   = useState([])   // 실패한 파일명 목록
   const fileInput  = useRef(null)
   const commentRef = useRef(null)
+  const nameRef    = useRef(null)
 
   useEffect(() => { loadFiles() }, [])
 
-  // 댓글 입력창이 열리면 포커스
+  // 댓글·제목 입력창이 열리면 포커스
   useEffect(() => {
     if (editingComment && commentRef.current) commentRef.current.focus()
   }, [editingComment])
+
+  useEffect(() => {
+    if (editingName && nameRef.current) {
+      nameRef.current.focus()
+      nameRef.current.select()
+    }
+  }, [editingName])
 
   async function loadFiles() {
     try { setFiles(await getFiles()) } catch { /* silent */ }
@@ -123,6 +133,22 @@ export default function App() {
   function handleCommentKeyDown(e, fid) {
     if (e.key === 'Enter') { e.preventDefault(); handleCommentSave(fid) }
     if (e.key === 'Escape') { setEditingComment(null) }
+  }
+
+  // ── 제목 저장 ─────────────────────────────────────────────────────
+  async function handleNameSave(fid) {
+    const name = nameDraft.trim()
+    if (!name) { setEditingName(null); return }
+    setEditingName(null)
+    setFiles(fs => fs.map(f =>
+      f.file_id === fid ? { ...f, file_name: name.endsWith('.pdf') ? name : name + '.pdf', updated_at: Date.now() / 1000 } : f
+    ))
+    try { await patchName(fid, name) } catch { await loadFiles() }
+  }
+
+  function handleNameKeyDown(e, fid) {
+    if (e.key === 'Enter') { e.preventDefault(); handleNameSave(fid) }
+    if (e.key === 'Escape') { setEditingName(null) }
   }
 
   // ── AI 요약 토글 ──────────────────────────────────────────────────
@@ -506,7 +532,28 @@ export default function App() {
                           </span>
                         )}
                       </div>
-                      <p className="text-slate-800 break-all leading-snug">{f.file_name}</p>
+                      {editingName === f.file_id ? (
+                        <input
+                          ref={nameRef}
+                          type="text"
+                          value={nameDraft}
+                          onChange={e => setNameDraft(e.target.value)}
+                          onBlur={() => handleNameSave(f.file_id)}
+                          onKeyDown={e => handleNameKeyDown(e, f.file_id)}
+                          className="w-full text-sm border border-blue-400 rounded-lg px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-400 bg-white mt-1"
+                        />
+                      ) : (
+                        <div className="flex items-start gap-1.5 group/name mt-1">
+                          <p className="text-slate-800 break-all leading-snug flex-1">{f.file_name}</p>
+                          <button
+                            onClick={() => { setEditingName(f.file_id); setNameDraft(f.file_name) }}
+                            className="opacity-0 group-hover/name:opacity-100 transition-opacity shrink-0 text-slate-400 hover:text-blue-600 text-base leading-snug mt-0.5"
+                            title="제목 수정"
+                          >
+                            ✏️
+                          </button>
+                        </div>
+                      )}
                       <p className="text-sm text-slate-400 mt-0.5">{f.total_pages}페이지 · {f.chunks}청크</p>
                     </div>
 

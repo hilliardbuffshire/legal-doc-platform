@@ -24,6 +24,16 @@ export async function deleteFile(fid) {
   return r.json()
 }
 
+export async function patchName(fid, name) {
+  const r = await fetch(`${BASE}/api/files/${fid}/name`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name }),
+  })
+  if (!r.ok) throw new Error(await r.text())
+  return r.json()
+}
+
 export async function patchStar(fid, star) {
   const r = await fetch(`${BASE}/api/files/${fid}/star`, {
     method: 'PATCH',

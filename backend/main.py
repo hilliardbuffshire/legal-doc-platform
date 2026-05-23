@@ -301,6 +301,36 @@ def delete_file(fid: str):
         con.execute("DELETE FROM file_meta WHERE file_id = ?", [fid])
     return {"ok": True}
 
+# ── PATCH /api/files/{fid}/name ───────────────────────────────────────
+class NameReq(BaseModel):
+    name: str
+
+@app.patch("/api/files/{fid}/name")
+def patch_name(fid: str, req: NameReq):
+    new_name = req.name.strip()
+    if not new_name:
+        raise HTTPException(400, "파일명이 비어 있습니다.")
+    if not new_name.lower().endswith(".pdf"):
+        new_name += ".pdf"
+
+    meta = load_meta()
+    if fid not in meta:
+        raise HTTPException(404, "파일을 찾을 수 없습니다.")
+
+    # meta.json 업데이트
+    meta[fid]["file_name"] = new_name
+    save_meta(meta)
+
+    # 벡터 스토어 안 모든 청크의 file_name 동기화
+    store = load_store()
+    for chunk in store:
+        if chunk["meta"]["file_id"] == fid:
+            chunk["meta"]["file_name"] = new_name
+    save_store(store)
+
+    db_upsert(fid)  # updated_at 갱신
+    return {"ok": True, "file_name": new_name}
+
 # ── PATCH /api/files/{fid}/star ───────────────────────────────────────
 class StarReq(BaseModel):
     star: int  # 0(초기화)~5
