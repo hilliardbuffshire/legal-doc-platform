@@ -24,6 +24,26 @@ export async function deleteFile(fid) {
   return r.json()
 }
 
+export async function patchStar(fid, star) {
+  const r = await fetch(`${BASE}/api/files/${fid}/star`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ star }),
+  })
+  if (!r.ok) throw new Error(await r.text())
+  return r.json()
+}
+
+export async function patchComment(fid, comment) {
+  const r = await fetch(`${BASE}/api/files/${fid}/comment`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ comment }),
+  })
+  if (!r.ok) throw new Error(await r.text())
+  return r.json()
+}
+
 export async function search(q) {
   const r = await fetch(`${BASE}/api/search?q=${encodeURIComponent(q)}`)
   if (!r.ok) throw new Error(await r.text())

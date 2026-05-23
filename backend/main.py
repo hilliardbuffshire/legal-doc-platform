@@ -1,8 +1,8 @@
 """
-법률 문서 검색 플랫폼 — 백엔드
-FastAPI + ONNX 임베딩 (한국어) + Anthropic Claude
+법률 문서 검색 플랫폼 — 백엔드 v3
+FastAPI + ONNX 임베딩 (한국어) + Anthropic Claude + SQLite (별점·메모·요약 영속 저장)
 """
-import os, io, json, hashlib, pickle, asyncio, warnings
+import os, io, json, hashlib, pickle, asyncio, warnings, sqlite3, time
 from pathlib import Path
 from typing import AsyncGenerator
 from concurrent.futures import ThreadPoolExecutor
@@ -25,20 +25,64 @@ load_dotenv()
 # ── 설정 ──────────────────────────────────────────────────────────────
 ANTHROPIC_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 CHAT_MODEL    = os.getenv("CLAUDE_MODEL", "claude-opus-4-5")
+SUMMARY_MODEL = os.getenv("SUMMARY_MODEL", CHAT_MODEL)
 CHUNK_SIZE    = 700
 CHUNK_OVR     = 80
 TOP_K         = 8
 
-ai       = anthropic.AsyncAnthropic(api_key=ANTHROPIC_KEY or "placeholder")
-_pool    = ThreadPoolExecutor(max_workers=2)
+ai    = anthropic.AsyncAnthropic(api_key=ANTHROPIC_KEY or "placeholder")
+_pool = ThreadPoolExecutor(max_workers=2)
 
 # ── 영속 저장소 ───────────────────────────────────────────────────────
 DATA_DIR   = Path(os.getenv("DATA_DIR", "."))
 UPLOAD_DIR = DATA_DIR / "uploads"
 META       = DATA_DIR / "meta.json"
 STORE      = DATA_DIR / "vector_store.pkl"
+DB_PATH    = DATA_DIR / "db.sqlite"
 
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
+# ── SQLite (별점·메모·요약·수정시각) ──────────────────────────────────
+def _db_conn() -> sqlite3.Connection:
+    return sqlite3.connect(str(DB_PATH), check_same_thread=False)
+
+def init_db():
+    with _db_conn() as con:
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS file_meta (
+                file_id    TEXT PRIMARY KEY,
+                star       INTEGER DEFAULT 0,
+                comment    TEXT    DEFAULT '',
+                summary    TEXT    DEFAULT '',
+                updated_at REAL    DEFAULT 0
+            )
+        """)
+
+init_db()
+
+def db_get_all() -> dict[str, dict]:
+    with _db_conn() as con:
+        rows = con.execute(
+            "SELECT file_id, star, comment, summary, updated_at FROM file_meta"
+        ).fetchall()
+    return {
+        r[0]: {"star": r[1], "comment": r[2], "summary": r[3], "updated_at": r[4]}
+        for r in rows
+    }
+
+def db_upsert(file_id: str, **kwargs):
+    """지정한 컬럼만 갱신. updated_at 은 항상 현재 시각으로 설정."""
+    kwargs["updated_at"] = time.time()
+    cols   = ", ".join(kwargs.keys())
+    ph     = ", ".join("?" * len(kwargs))
+    update = ", ".join(f"{k}=excluded.{k}" for k in kwargs)
+    vals   = [file_id] + list(kwargs.values())
+    with _db_conn() as con:
+        con.execute(
+            f"INSERT INTO file_meta (file_id, {cols}) VALUES (?, {ph}) "
+            f"ON CONFLICT(file_id) DO UPDATE SET {update}",
+            vals,
+        )
 
 # ── 임베딩 모델 ────────────────────────────────────────────────────────
 from embedder import Embedder
@@ -120,8 +164,27 @@ def make_chunks(fid: str, fname: str, page: int, text: str) -> list[dict]:
     flush()
     return chunks
 
+# ── AI 요약 생성 (업로드 시 1회) ──────────────────────────────────────
+async def generate_summary(pages: list[dict]) -> str:
+    preview = "\n\n".join(p["text"] for p in pages[:5])[:3000]
+    try:
+        msg = await ai.messages.create(
+            model=SUMMARY_MODEL,
+            max_tokens=250,
+            messages=[{
+                "role": "user",
+                "content": (
+                    "다음 법률 문서의 핵심 내용을 한국어로 3문장 이내로 간결하게 요약해 주세요. "
+                    "문서 종류, 주요 주장, 핵심 결론을 포함하세요.\n\n" + preview
+                ),
+            }],
+        )
+        return msg.content[0].text.strip()
+    except Exception:
+        return ""
+
 # ── FastAPI ───────────────────────────────────────────────────────────
-app = FastAPI(title="법률 문서 플랫폼", version="2.0")
+app = FastAPI(title="법률 문서 플랫폼", version="3.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"], allow_methods=["*"], allow_headers=["*"],
@@ -130,7 +193,19 @@ app.add_middleware(
 # ── GET /api/files ─────────────────────────────────────────────────────
 @app.get("/api/files")
 def get_files():
-    return sorted(load_meta().values(), key=lambda x: x["file_name"])
+    meta   = load_meta()
+    db_map = db_get_all()
+    result = []
+    for fid, info in meta.items():
+        row = db_map.get(fid, {})
+        result.append({
+            **info,
+            "star":       row.get("star", 0),
+            "comment":    row.get("comment", ""),
+            "summary":    row.get("summary", ""),
+            "updated_at": row.get("updated_at", 0),
+        })
+    return sorted(result, key=lambda x: x["updated_at"], reverse=True)
 
 # ── POST /api/upload ──────────────────────────────────────────────────
 @app.post("/api/upload")
@@ -163,6 +238,9 @@ async def upload(file: UploadFile = File(...)):
             store.append(c)
     save_store(store)
 
+    # AI 요약 생성 (실패해도 업로드는 계속)
+    summary = await generate_summary(pages)
+
     info = {
         "file_id":     fid,
         "file_name":   file.filename,
@@ -171,6 +249,8 @@ async def upload(file: UploadFile = File(...)):
     }
     meta[fid] = info
     save_meta(meta)
+    db_upsert(fid, summary=summary)
+
     return {"skipped": False, "file": info, "message": f"업로드 완료 ({len(all_chunks)}개 청크)"}
 
 # ── GET /api/files/{fid}/pdf ──────────────────────────────────────────
@@ -203,7 +283,33 @@ def delete_file(fid: str):
         pdf_path.unlink()
     del meta[fid]
     save_meta(meta)
+    with _db_conn() as con:
+        con.execute("DELETE FROM file_meta WHERE file_id = ?", [fid])
     return {"ok": True}
+
+# ── PATCH /api/files/{fid}/star ───────────────────────────────────────
+class StarReq(BaseModel):
+    star: int  # 0(초기화)~5
+
+@app.patch("/api/files/{fid}/star")
+def patch_star(fid: str, req: StarReq):
+    if fid not in load_meta():
+        raise HTTPException(404, "파일을 찾을 수 없습니다.")
+    if not (0 <= req.star <= 5):
+        raise HTTPException(400, "별점은 0~5 사이여야 합니다.")
+    db_upsert(fid, star=req.star)
+    return {"ok": True, "star": req.star}
+
+# ── PATCH /api/files/{fid}/comment ───────────────────────────────────
+class CommentReq(BaseModel):
+    comment: str
+
+@app.patch("/api/files/{fid}/comment")
+def patch_comment(fid: str, req: CommentReq):
+    if fid not in load_meta():
+        raise HTTPException(404, "파일을 찾을 수 없습니다.")
+    db_upsert(fid, comment=req.comment[:200])
+    return {"ok": True, "comment": req.comment[:200]}
 
 # ── GET /api/search ───────────────────────────────────────────────────
 @app.get("/api/search")
@@ -214,7 +320,6 @@ async def search(q: str = Query(..., min_length=1)):
 
     hits_raw = cosine_search(store, await embed(q), n=min(80, len(store)))
 
-    # 문서(file_id) 단위로 그룹핑 — 문서당 최고 점수 청크만 유지
     doc_map: dict = {}
     for h in hits_raw:
         m   = h["chunk"]["meta"]
