@@ -230,6 +230,7 @@ export default function App() {
 
   const visible = allMeta
     .filter(f =>
+      (!query.trim()   || f.file_name.toLowerCase().includes(query.trim().toLowerCase())) &&
       (!filterType     || f.docType === filterType) &&
       (!filterSender   || f.sender  === filterSender) &&
       (filterMinStar === 0 || f.star >= filterMinStar)
@@ -328,7 +329,7 @@ export default function App() {
               type="text"
               value={query}
               onChange={e => setQuery(e.target.value)}
-              placeholder="찾으시는 문서가 있으세요? 질문을 입력하세요…"
+              placeholder="제목 검색 (예: 준비서면) — 입력 즉시 목록 필터링 · 검색 버튼으로 AI 분석"
               className="flex-1 px-4 py-3 border rounded-xl text-base focus:outline-none focus:ring-2 focus:ring-blue-400 bg-white shadow-sm"
             />
             <button
