@@ -76,6 +76,7 @@ export default function App() {
   const [aiText,         setAiText]         = useState('')
   const [aiSources,      setAiSources]      = useState([])
   const [aiLoading,      setAiLoading]      = useState(false)
+  const [aiOpen,         setAiOpen]         = useState(true)
   const [filterType,     setFilterType]     = useState('')
   const [filterSender,   setFilterSender]   = useState('')
   const [filterMinStar,  setFilterMinStar]  = useState(0)
@@ -165,7 +166,7 @@ export default function App() {
     e.preventDefault()
     if (!query.trim()) return
     setAiText(''); setAiSources([]); setSearchResults([])
-    setSearching(true); setAiLoading(true)
+    setSearching(true); setAiLoading(true); setAiOpen(true)
     try {
       try {
         const res = await search(query)
@@ -409,30 +410,50 @@ export default function App() {
           </section>
         )}
 
-        {/* ── AI 응답 ── */}
+        {/* ── AI 응답 (아코디언) ── */}
         {(aiText || aiLoading) && (
-          <section className="bg-white rounded-2xl border shadow-sm p-6 space-y-4">
-            <div className="flex items-center gap-2 font-semibold text-slate-700">
-              <span>🤖</span><span>AI 분석 결과</span>
-              {aiLoading && <span className="text-blue-500 animate-pulse ml-2 font-normal text-sm">생성 중…</span>}
-            </div>
-            <p className="text-slate-700 whitespace-pre-wrap leading-relaxed">{aiText}</p>
-            {aiSources.length > 0 && (
-              <div className="pt-2 border-t space-y-1">
-                <p className="text-sm font-semibold text-slate-500">📎 참조 문서</p>
-                {aiSources.map((s, i) => (
-                  <a
-                    key={i}
-                    href={getPdfUrl(s.file_id)}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="block text-sm text-blue-600 hover:underline truncate"
-                  >
-                    {s.file_name} · {s.page}페이지
-                  </a>
-                ))}
+          <section className="bg-white rounded-2xl border shadow-sm overflow-hidden">
+            {/* 헤더 — 클릭으로 접기/펼치기 */}
+            <button
+              onClick={() => setAiOpen(o => !o)}
+              className="w-full flex items-center justify-between px-6 py-4 hover:bg-slate-50 transition-colors"
+            >
+              <div className="flex items-center gap-2 font-semibold text-slate-700">
+                <span>🤖</span><span>AI 분석 결과</span>
+                {aiLoading && <span className="text-blue-500 animate-pulse ml-2 font-normal text-sm">생성 중…</span>}
               </div>
-            )}
+              <span
+                className="text-slate-400 text-sm transition-transform duration-200"
+                style={{ transform: aiOpen ? 'rotate(90deg)' : 'rotate(0deg)' }}
+              >
+                ▶
+              </span>
+            </button>
+
+            {/* 본문 */}
+            <div className={`summary-body${aiOpen ? ' open' : ''}`}>
+              <div>
+                <div className="px-6 pb-6 space-y-4 border-t">
+                  <p className="text-slate-700 whitespace-pre-wrap leading-relaxed pt-4">{aiText}</p>
+                  {aiSources.length > 0 && (
+                    <div className="pt-2 border-t space-y-1">
+                      <p className="text-sm font-semibold text-slate-500">📎 참조 문서</p>
+                      {aiSources.map((s, i) => (
+                        <a
+                          key={i}
+                          href={getPdfUrl(s.file_id)}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="block text-sm text-blue-600 hover:underline truncate"
+                        >
+                          {s.file_name} · {s.page}페이지
+                        </a>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
           </section>
         )}
 
