@@ -216,13 +216,18 @@ export default function App() {
         const res = await uploadFile(f)
         if (res.skipped) {
           skipped.push({
-            name:         f.name,                          // 업로드 시도한 파일명
-            existingName: res.file?.file_name ?? f.name,   // 시스템에 이미 있는 파일명
+            name:         f.name,
+            existingName: res.file?.file_name ?? f.name,
             time:         ts,
           })
         } else {
           ok++
-          setUploadLog(prev => [...prev, { type: 'ok', name: f.name, time: ts }])
+          setUploadLog(prev => [...prev, {
+            type:          'ok',
+            name:          f.name,
+            generatedName: res.file?.file_name,   // 자동 생성된 제목
+            time:          ts,
+          }])
         }
       } catch (err) {
         failed.push({ name: f.name, reason: err.message, time: ts })
@@ -395,7 +400,10 @@ export default function App() {
                   <span>{icon}</span>
                   <span className="text-slate-400 shrink-0">[{entry.time}]</span>
                   <span className={`font-semibold shrink-0 ${color}`}>{label}</span>
-                  <span className="text-slate-700 break-all">{entry.name}</span>
+                  <span className="text-slate-500 break-all">{entry.name}</span>
+                  {entry.generatedName && (
+                    <span className="text-emerald-700 shrink-0 font-medium">→ '{entry.generatedName}'</span>
+                  )}
                   {entry.existingName && entry.existingName !== entry.name && (
                     <span className="text-amber-600 shrink-0">→ 플랫폼: '{entry.existingName}'</span>
                   )}

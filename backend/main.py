@@ -3,7 +3,7 @@
 FastAPI + Anthropic Claude (AI 요약) + SQLite (별점·메모·요약 영속 저장)
 벡터 검색 제거 — 파일명 기반 필터링만 사용
 """
-import os, io, json, hashlib, sqlite3, time
+import os, io, json, hashlib, sqlite3, time, asyncio, re
 from pathlib import Path
 from urllib.parse import quote
 
@@ -140,6 +140,68 @@ def extract_pages(pdf_bytes: bytes) -> tuple:
     is_scanned = len(pages) == 0
     return pages, is_scanned
 
+# ── 다음 문서 번호 계산 ───────────────────────────────────────────────
+def next_doc_number(meta: dict) -> int:
+    """meta.json 내 최대 [N] 번호 + 1"""
+    nums = []
+    for info in meta.values():
+        m = re.match(r'^\[(\d+)\]', info.get('file_name', ''))
+        if m:
+            nums.append(int(m.group(1)))
+    return (max(nums) + 1) if nums else 1
+
+
+# ── 제목 자동 생성 (플랫폼 형식) ─────────────────────────────────────
+async def generate_formatted_title(pages: list, total_pages: int, num: int, original_filename: str) -> str:
+    """
+    Claude로 [번호] 문서종류 ／ 제출자 ／ 핵심내용 ／ 사건번호 (pp.1-N).pdf 형식 생성.
+    텍스트 없는 스캔 PDF는 원본 파일명에 번호만 붙여 반환.
+    """
+    base = original_filename.rsplit('.', 1)[0]  # .pdf 제거
+
+    if not pages:
+        return f"[{num:02d}] {base} (pp.1-{total_pages}).pdf"
+
+    preview = "\n\n".join(p["text"] for p in pages[:6])[:3500]
+
+    prompt = (
+        "다음 법률 문서를 분석하여 아래 형식에 맞는 파일명을 출력하세요.\n\n"
+        "형식 예시 (실제 플랫폼에서 사용 중):\n"
+        "[01] 소장 ／ 원고 ／ 손해배상 청구 (토양오염·악취) ／ 2023가단62004 (pp.1-12).pdf\n"
+        "[42] 감정서 핵심발췌 ／ 감정인 김한승 ／ 중금속검사 필요·토목공사비 누락 ／ 2023가단62004 (pp.1-38).pdf\n"
+        "[46] 항소기록 접수통지서 ／ 광주고등법원 ／ 피고 항소인 김광영·박봉규·2026.5.13 수령 ／ 2026나20290 (pp.1-7).pdf\n"
+        "[48] 금전공탁 통지서 ／ 공탁자 문영국 (피공탁자 정상문) ／ 141,033,382원 변제공탁 ／ 2026금1026 (pp.1-4).pdf\n\n"
+        "출력 규칙:\n"
+        f"- 번호: [{num:02d}] (고정, 변경 금지)\n"
+        "- 구분자: \" ／ \" (전각 슬래시 U+FF0F, 앞뒤 공백 포함) — 반드시 이 문자 사용\n"
+        "- 항목 4개: 문서종류 ／ 제출자 ／ 핵심내용 ／ 사건번호\n"
+        f"- 마지막: \" (pp.1-{total_pages}).pdf\" (고정)\n"
+        "- 핵심내용: 30자 이내, · 로 항목 연결\n"
+        "- 사건번호: 문서에 기재된 사건번호 (예: 2023가단62004, 2026나20290)\n"
+        "  사건번호가 없으면 핵심 키워드로 대체\n"
+        "- 총 파일명 120자 이내\n"
+        "- 파일명 한 줄만 출력. 설명·마크다운·따옴표 없이.\n\n"
+        f"문서 내용:\n{preview}"
+    )
+
+    try:
+        msg = await ai.messages.create(
+            model=SUMMARY_MODEL,
+            max_tokens=160,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        title = msg.content[0].text.strip().strip('"').strip("'")
+        if re.match(r'^\[\d+\]', title):
+            if not title.lower().endswith('.pdf'):
+                title += '.pdf'
+            return title[:220]
+    except Exception:
+        pass
+
+    # 폴백: 번호만 붙임
+    return f"[{num:02d}] {base} (pp.1-{total_pages}).pdf"
+
+
 # ── AI 요약 (업로드 시 1회) ───────────────────────────────────────────
 async def generate_summary(pages: list) -> str:
     preview = "\n\n".join(p["text"] for p in pages[:5])[:3000]
@@ -199,25 +261,32 @@ async def upload(file: UploadFile = File(...)):
         return {"skipped": True, "file": meta[fid], "message": "이미 처리된 파일입니다."}
 
     pages, is_scanned = extract_pages(data)
+    total_pages       = _page_count(data)
+    num               = next_doc_number(meta)
+
     (UPLOAD_DIR / f"{fid}.pdf").write_bytes(data)
 
-    summary = (
-        (await generate_summary(pages))
-        if pages
-        else "이미지 스캔 PDF — 텍스트 검색 불가, 열람만 가능합니다."
-    )
+    # 제목 생성 + AI 요약 병렬 실행
+    if pages:
+        formatted_title, summary = await asyncio.gather(
+            generate_formatted_title(pages, total_pages, num, file.filename),
+            generate_summary(pages),
+        )
+    else:
+        summary         = "이미지 스캔 PDF — 텍스트 검색 불가, 열람만 가능합니다."
+        formatted_title = await generate_formatted_title([], total_pages, num, file.filename)
 
     info = {
         "file_id":     fid,
-        "file_name":   file.filename,
-        "total_pages": _page_count(data),
+        "file_name":   formatted_title,
+        "total_pages": total_pages,
         "is_scanned":  is_scanned,
     }
     meta[fid] = info
     save_meta(meta)
     db_upsert(fid, summary=summary)
 
-    return {"skipped": False, "file": info, "message": "업로드 완료"}
+    return {"skipped": False, "file": info, "message": f"업로드 완료 — '{formatted_title}'"}
 
 # ── GET /api/files/{fid}/pdf ──────────────────────────────────────────
 @app.get("/api/files/{fid}/pdf")
