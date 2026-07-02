@@ -248,10 +248,15 @@ def get_files():
     return sorted(result, key=lambda x: x["updated_at"], reverse=True)
 
 # ── POST /api/upload ──────────────────────────────────────────────────
+ALLOWED_EXT = (".pdf", ".hwp", ".hwpx")
+
 @app.post("/api/upload")
 async def upload(file: UploadFile = File(...)):
-    if not file.filename.lower().endswith(".pdf"):
-        raise HTTPException(400, "PDF 파일만 업로드 가능합니다.")
+    fname_lower = file.filename.lower()
+    matched     = next((e for e in ALLOWED_EXT if fname_lower.endswith(e)), None)
+    if not matched:
+        raise HTTPException(400, "PDF 또는 HWP 파일만 업로드 가능합니다.")
+    ext = matched.lstrip(".")  # 'pdf' / 'hwp' / 'hwpx'
 
     data = await file.read()
     fid  = hashlib.md5(file.filename.encode()).hexdigest()
@@ -260,27 +265,35 @@ async def upload(file: UploadFile = File(...)):
     if fid in meta:
         return {"skipped": True, "file": meta[fid], "message": "이미 처리된 파일입니다."}
 
-    pages, is_scanned = extract_pages(data)
-    total_pages       = _page_count(data)
-    num               = next_doc_number(meta)
+    num = next_doc_number(meta)
+    (UPLOAD_DIR / f"{fid}.{ext}").write_bytes(data)
 
-    (UPLOAD_DIR / f"{fid}.pdf").write_bytes(data)
-
-    # 제목 생성 + AI 요약 병렬 실행
-    if pages:
-        formatted_title, summary = await asyncio.gather(
-            generate_formatted_title(pages, total_pages, num, file.filename),
-            generate_summary(pages),
-        )
+    if ext == "pdf":
+        pages, is_scanned = extract_pages(data)
+        total_pages       = _page_count(data)
+        # 제목 생성 + AI 요약 병렬 실행
+        if pages:
+            formatted_title, summary = await asyncio.gather(
+                generate_formatted_title(pages, total_pages, num, file.filename),
+                generate_summary(pages),
+            )
+        else:
+            summary         = "이미지 스캔 PDF — 텍스트 검색 불가, 열람만 가능합니다."
+            formatted_title = await generate_formatted_title([], total_pages, num, file.filename)
     else:
-        summary         = "이미지 스캔 PDF — 텍스트 검색 불가, 열람만 가능합니다."
-        formatted_title = await generate_formatted_title([], total_pages, num, file.filename)
+        # HWP/HWPX: 텍스트 추출·AI 제목/요약 생략, 원본 파일명에 번호만 부여
+        is_scanned      = False
+        total_pages     = 0
+        base            = file.filename.rsplit(".", 1)[0]
+        formatted_title = f"[{num:02d}] {base}.{ext}"
+        summary         = "HWP 문서 — 브라우저 미리보기 미지원. 다운로드하여 열람하세요."
 
     info = {
         "file_id":     fid,
         "file_name":   formatted_title,
         "total_pages": total_pages,
         "is_scanned":  is_scanned,
+        "ext":         ext,
     }
     meta[fid] = info
     save_meta(meta)
@@ -294,14 +307,17 @@ def serve_pdf(fid: str, dl: bool = Query(False)):
     meta = load_meta()
     if fid not in meta:
         raise HTTPException(404, "파일을 찾을 수 없습니다.")
-    pdf_path = UPLOAD_DIR / f"{fid}.pdf"
-    if not pdf_path.exists():
+    ext      = meta[fid].get("ext", "pdf")
+    file_path = UPLOAD_DIR / f"{fid}.{ext}"
+    if not file_path.exists():
         raise HTTPException(404, "파일이 서버에 없습니다. 다시 업로드해 주세요.")
-    fname       = meta[fid]["file_name"]
-    disposition = "attachment" if dl else "inline"
+    fname     = meta[fid]["file_name"]
+    media     = "application/pdf" if ext == "pdf" else "application/octet-stream"
+    # HWP 등 비-PDF는 브라우저 인라인 렌더링 불가 → 항상 다운로드
+    disposition = "attachment" if (dl or ext != "pdf") else "inline"
     return FileResponse(
-        pdf_path,
-        media_type="application/pdf",
+        file_path,
+        media_type=media,
         headers={"Content-Disposition": f"{disposition}; filename*=UTF-8''{quote(fname)}"},
     )
 
@@ -311,9 +327,10 @@ def delete_file(fid: str):
     meta = load_meta()
     if fid not in meta:
         raise HTTPException(404, "파일을 찾을 수 없습니다.")
-    pdf_path = UPLOAD_DIR / f"{fid}.pdf"
-    if pdf_path.exists():
-        pdf_path.unlink()
+    ext      = meta[fid].get("ext", "pdf")
+    file_path = UPLOAD_DIR / f"{fid}.{ext}"
+    if file_path.exists():
+        file_path.unlink()
     del meta[fid]
     save_meta(meta)
     with _db_conn() as con:
@@ -329,11 +346,12 @@ def patch_name(fid: str, req: NameReq):
     new_name = req.name.strip()
     if not new_name:
         raise HTTPException(400, "파일명이 비어 있습니다.")
-    if not new_name.lower().endswith(".pdf"):
-        new_name += ".pdf"
     meta = load_meta()
     if fid not in meta:
         raise HTTPException(404, "파일을 찾을 수 없습니다.")
+    ext = meta[fid].get("ext", "pdf")
+    if not new_name.lower().endswith((".pdf", ".hwp", ".hwpx")):
+        new_name += f".{ext}"
     meta[fid]["file_name"] = new_name
     save_meta(meta)
     db_upsert(fid)  # updated_at 갱신
