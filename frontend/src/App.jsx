@@ -181,7 +181,7 @@ export default function App() {
     setEditingName(null)
     setFiles(fs => fs.map(f =>
       f.file_id === fid
-        ? { ...f, file_name: /\.(pdf|hwp|hwpx)$/i.test(name) ? name : `${name}.${f.ext || 'pdf'}`, updated_at: Date.now() / 1000 }
+        ? { ...f, file_name: (() => { const e = f.ext || 'pdf'; return name.toLowerCase().endsWith(`.${e}`) ? name : `${name}.${e}` })(), updated_at: Date.now() / 1000 }
         : f
     ))
     try { await patchName(fid, name) } catch { await loadFiles() }
@@ -322,7 +322,7 @@ export default function App() {
             >
               + 파일 업로드
             </button>
-            <input ref={fileInput} type="file" accept=".pdf,.hwp,.hwpx" multiple className="hidden" onChange={handleUpload} />
+            <input ref={fileInput} type="file" multiple className="hidden" onChange={handleUpload} />
           </div>
         </div>
 
@@ -566,7 +566,7 @@ export default function App() {
             {visible.length === 0 ? (
               <div className="text-center py-16 text-slate-400">
                 {files.length === 0
-                  ? '업로드된 문서가 없습니다. PDF·HWP 파일을 업로드해 주세요.'
+                  ? '업로드된 문서가 없습니다. 파일을 업로드해 주세요.'
                   : '조건에 맞는 문서가 없습니다.'}
               </div>
             ) : (
@@ -623,7 +623,7 @@ export default function App() {
 
                         <p className="text-sm text-slate-400 mt-0.5">
                           {f.ext && f.ext !== 'pdf' ? (
-                            <span className="text-xs text-violet-600 font-medium">📄 HWP 문서 — 미리보기 미지원, 다운로드하여 열람</span>
+                            <span className="text-xs text-violet-600 font-medium">📄 {f.ext.toUpperCase()} 파일 — 미리보기 미지원, 다운로드하여 열람</span>
                           ) : (
                             <>
                               {f.total_pages}페이지

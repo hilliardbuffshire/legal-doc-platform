@@ -248,15 +248,19 @@ def get_files():
     return sorted(result, key=lambda x: x["updated_at"], reverse=True)
 
 # ── POST /api/upload ──────────────────────────────────────────────────
-ALLOWED_EXT = (".pdf", ".hwp", ".hwpx")
+def _file_ext(filename: str) -> str:
+    """파일명에서 확장자 추출 (소문자). 확장자 없으면 'bin'."""
+    if "." in filename:
+        ext = filename.rsplit(".", 1)[1].strip().lower()
+        if ext:
+            return ext
+    return "bin"
 
 @app.post("/api/upload")
 async def upload(file: UploadFile = File(...)):
-    fname_lower = file.filename.lower()
-    matched     = next((e for e in ALLOWED_EXT if fname_lower.endswith(e)), None)
-    if not matched:
-        raise HTTPException(400, "PDF 또는 HWP 파일만 업로드 가능합니다.")
-    ext = matched.lstrip(".")  # 'pdf' / 'hwp' / 'hwpx'
+    if not file.filename:
+        raise HTTPException(400, "파일 이름이 없습니다.")
+    ext = _file_ext(file.filename)  # 확장자 제한 없음 — 모든 형식 허용
 
     data = await file.read()
     fid  = hashlib.md5(file.filename.encode()).hexdigest()
@@ -281,12 +285,11 @@ async def upload(file: UploadFile = File(...)):
             summary         = "이미지 스캔 PDF — 텍스트 검색 불가, 열람만 가능합니다."
             formatted_title = await generate_formatted_title([], total_pages, num, file.filename)
     else:
-        # HWP/HWPX: 텍스트 추출·AI 제목/요약 생략, 원본 파일명에 번호만 부여
+        # PDF 외 모든 형식: 텍스트 추출·AI 제목/요약 생략, 원본 파일명에 번호만 부여
         is_scanned      = False
         total_pages     = 0
-        base            = file.filename.rsplit(".", 1)[0]
-        formatted_title = f"[{num:02d}] {base}.{ext}"
-        summary         = "HWP 문서 — 브라우저 미리보기 미지원. 다운로드하여 열람하세요."
+        formatted_title = f"[{num:02d}] {file.filename}"
+        summary         = "첨부 문서 — 브라우저 미리보기 미지원. 다운로드하여 열람하세요."
 
     info = {
         "file_id":     fid,
@@ -350,7 +353,7 @@ def patch_name(fid: str, req: NameReq):
     if fid not in meta:
         raise HTTPException(404, "파일을 찾을 수 없습니다.")
     ext = meta[fid].get("ext", "pdf")
-    if not new_name.lower().endswith((".pdf", ".hwp", ".hwpx")):
+    if not new_name.lower().endswith(f".{ext}"):
         new_name += f".{ext}"
     meta[fid]["file_name"] = new_name
     save_meta(meta)
