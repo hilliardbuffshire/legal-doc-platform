@@ -88,7 +88,9 @@ export default function App() {
   const [uploadSkipped,        setUploadSkipped]        = useState([])  // 중복 파일 목록
   const [uploadLog,            setUploadLog]            = useState([])  // 전체 업로드 이력
   const [showLog,              setShowLog]              = useState(false)
+  const [dragActive,           setDragActive]           = useState(false)  // 드래그 오버레이 표시
   const fileInput          = useRef(null)
+  const dragCounter        = useRef(0)   // 중첩 dragenter/leave 상쇄용
   const commentRef         = useRef(null)
   const lawyerCommentRef   = useRef(null)
   const nameRef            = useRef(null)
@@ -203,7 +205,32 @@ export default function App() {
 
   // ── 업로드 ────────────────────────────────────────────────────────
   async function handleUpload(e) {
-    const selectedFiles = Array.from(e.target.files)
+    await uploadFiles(Array.from(e.target.files))
+    if (fileInput.current) fileInput.current.value = ''   // 같은 파일 재선택 허용
+  }
+
+  // 드래그 앤 드롭
+  function handleDragOver(e)  { e.preventDefault() }
+  function handleDragEnter(e) {
+    e.preventDefault()
+    if (!Array.from(e.dataTransfer?.types || []).includes('Files')) return
+    dragCounter.current++
+    setDragActive(true)
+  }
+  function handleDragLeave(e) {
+    e.preventDefault()
+    dragCounter.current--
+    if (dragCounter.current <= 0) { dragCounter.current = 0; setDragActive(false) }
+  }
+  function handleDrop(e) {
+    e.preventDefault()
+    dragCounter.current = 0
+    setDragActive(false)
+    const dropped = Array.from(e.dataTransfer?.files || [])
+    if (dropped.length) uploadFiles(dropped)
+  }
+
+  async function uploadFiles(selectedFiles) {
     if (!selectedFiles.length) return
     setUploading(true); setUploadMsg(''); setUploadFailed([]); setUploadSkipped([])
     let ok = 0
@@ -293,7 +320,22 @@ export default function App() {
   const hasFilter   = filterType || filterSender || filterMinStar > 0
 
   return (
-    <div className="min-h-screen bg-slate-50">
+    <div
+      className="min-h-screen bg-slate-50"
+      onDragEnter={handleDragEnter}
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+    >
+      {dragActive && (
+        <div className="fixed inset-0 z-50 bg-blue-600/10 backdrop-blur-sm border-4 border-dashed border-blue-500 flex items-center justify-center pointer-events-none">
+          <div className="bg-white px-8 py-6 rounded-2xl shadow-xl text-center">
+            <p className="text-3xl mb-2">📂</p>
+            <p className="text-lg font-bold text-slate-800">여기에 파일을 놓으세요</p>
+            <p className="text-sm text-slate-500 mt-1">모든 형식 업로드 가능 · 여러 개 동시 가능</p>
+          </div>
+        </div>
+      )}
 
       {/* ── 헤더 ── */}
       <header className="bg-white border-b sticky top-0 z-10 shadow-sm">
