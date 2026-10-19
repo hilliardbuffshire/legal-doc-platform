@@ -248,6 +248,27 @@ def _check_admin(key: str):
     if not ADMIN_KEY or key != ADMIN_KEY:
         raise HTTPException(403, "관리자 키가 필요합니다.")
 
+# ── 헬퍼 사용자 선호(문체·뉘앙스) — 기기와 무관하게 유지 ───────────────
+with _db_conn() as _con:
+    _con.execute("CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v TEXT)")
+
+@app.get("/api/prefs")
+def get_prefs():
+    with _db_conn() as con:
+        row = con.execute("SELECT v FROM kv WHERE k='prefs'").fetchone()
+    return json.loads(row[0]) if row else []
+
+class PrefsReq(BaseModel):
+    prefs: list
+
+@app.put("/api/prefs")
+def put_prefs(req: PrefsReq):
+    prefs = [str(p)[:200] for p in req.prefs if str(p).strip()][:40]
+    with _db_conn() as con:
+        con.execute("INSERT INTO kv (k, v) VALUES ('prefs', ?) ON CONFLICT(k) DO UPDATE SET v=excluded.v",
+                    [json.dumps(prefs, ensure_ascii=False)])
+    return prefs
+
 # ── GET /api/search — 질문 관련 구간 요약·원문 쪽 ──────────────────────
 @app.get("/api/search")
 def search(q: str = Query(..., min_length=1), k: int = Query(10, le=30), budget: int = Query(30000, le=80000)):
