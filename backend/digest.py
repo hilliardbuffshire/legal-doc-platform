@@ -16,7 +16,7 @@ import fitz
 
 CHUNK_PAGES = 25      # 한 번에 읽을 쪽 수 (스캔 PDF 25쪽 ≈ 10MB 이하)
 TEXT_OK     = 150     # 워터마크 제외 글자 수가 이 이상이면 텍스트로 읽을 수 있는 쪽
-DUP_BITS    = 10      # 이미지 쪽 중복 판정 허용 비트 차이(256비트 중)
+DUP_BITS    = 3       # 이미지 쪽 중복 판정 허용 비트 차이(256비트 중). 같은 기록 재다운로드는 0, 다른 빈 쪽끼리는 8 이상
 PARALLEL    = 3       # 동시 판독 요청 수
 
 CHUNK_PROMPT = """당신은 한국 민사소송 기록을 정리하는 법률 보조원입니다. 아래는 서류 「{title}」의 일부(원본 쪽번호: {pr})입니다.
@@ -230,12 +230,14 @@ class Digester:
             d = self._load(fid)
             pages = await asyncio.to_thread(self._scan_pages, fid, doc)
             d["pages"] = [{"page": p["page"], "text": p["text"]} for p in pages]
-            d["dups"] = await asyncio.to_thread(self._find_dups, fid, pages)
-            todo = [p["page"] for p in pages if str(p["page"]) not in d["dups"]]
+            # 이미 읽은 쪽은 그대로 두고(중복 판정에서도 제외), 아직 안 읽은 쪽만 새로 읽음 → 재판독해도 추가 비용은 새 쪽만
+            covered = {n for c in d["chunks"] for n in c["pages"]}
+            dups = await asyncio.to_thread(self._find_dups, fid, pages)
+            d["dups"] = {k: v for k, v in dups.items() if int(k) not in covered}
+            todo = [p["page"] for p in pages if str(p["page"]) not in d["dups"] and p["page"] not in covered]
             groups = [todo[i:i + CHUNK_PAGES] for i in range(0, len(todo), CHUNK_PAGES)]
-            have = {tuple(c["pages"]) for c in d["chunks"]}
-            d["chunks"] = [c for c in d["chunks"] if tuple(c["pages"]) in {tuple(g) for g in groups}]
-            self._set(fid, status="running", total=len(groups), done=len(have & {tuple(g) for g in groups}), error="")
+            old_summary = self.status_map().get(fid, {}).get("summary", "")
+            self._set(fid, status="running", total=len(d["chunks"]) + len(groups), done=len(d["chunks"]), error="")
             self._save(fid, d)
 
             sem = asyncio.Semaphore(PARALLEL)
@@ -249,10 +251,12 @@ class Digester:
                 with self.db() as con:
                     con.execute("UPDATE doc_digest SET done=done+1, updated=? WHERE file_id=?", [time.time(), fid])
 
-            await asyncio.gather(*[one(g) for g in groups if tuple(g) not in have])
+            await asyncio.gather(*[one(g) for g in groups])
 
-            if groups:
+            if groups or (d["chunks"] and not old_summary):
                 summary = await self.summarize(fid, title, len(pages), d)
+            elif d["chunks"]:
+                summary = old_summary
             else:
                 refs = sorted({meta.get(v[0], {}).get("file_name", v[0])[:60] for v in d["dups"].values()})
                 summary = "이 파일의 모든 쪽은 다음 서류와 내용이 같습니다(중복 다운로드): " + " / ".join(refs)
