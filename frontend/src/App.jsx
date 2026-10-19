@@ -40,9 +40,23 @@ function StarRating({ value, onChange }) {
 }
 
 // ── AI 요약 아코디언 ──────────────────────────────────────────────────
-function SummaryAccordion({ summary, isOpen, onToggle }) {
+const DIGEST_LABEL = {
+  done:        ['🧠 전체 판독 완료 — 헬퍼가 모든 쪽 내용을 알고 있음', 'text-emerald-700'],
+  running:     ['⏳ 전체 판독 중', 'text-amber-700'],
+  pending:     ['⏳ 전체 판독 대기 중', 'text-amber-700'],
+  summarizing: ['⏳ 전체 요약 정리 중', 'text-amber-700'],
+  error:       ['⚠️ 전체 판독 실패 — 관리자에게 알려 주세요', 'text-red-600'],
+}
+
+function SummaryAccordion({ summary, digest, status, done, total, isOpen, onToggle }) {
+  const label = DIGEST_LABEL[status]
   return (
     <div className="mt-2.5">
+      {label && (
+        <p className={`text-xs mb-1 ${label[1]}`}>
+          {label[0]}{status === 'running' && total ? ` (${done}/${total} 구간)` : ''}
+        </p>
+      )}
       <button
         onClick={onToggle}
         className="flex items-center gap-1.5 text-sm text-blue-600 hover:text-blue-800 transition-colors select-none"
@@ -57,8 +71,8 @@ function SummaryAccordion({ summary, isOpen, onToggle }) {
       </button>
       <div className={`summary-body${isOpen ? ' open' : ''}`}>
         <div>
-          <p className="mt-2 text-sm text-slate-700 leading-relaxed bg-blue-50 rounded-xl px-4 py-3 border border-blue-100">
-            {summary || '요약 생성에 실패했습니다. 파일을 다시 업로드해 주세요.'}
+          <p className="mt-2 text-sm text-slate-700 leading-relaxed bg-blue-50 rounded-xl px-4 py-3 border border-blue-100 whitespace-pre-line">
+            {digest || summary || '요약 생성에 실패했습니다. 파일을 다시 업로드해 주세요.'}
           </p>
         </div>
       </div>
@@ -783,6 +797,10 @@ export default function App() {
                     {/* AI 요약 아코디언 */}
                     <SummaryAccordion
                       summary={f.summary}
+                      digest={f.digest}
+                      status={f.digest_status}
+                      done={f.digest_done}
+                      total={f.digest_total}
                       isOpen={openSummaries.has(f.file_id)}
                       onToggle={() => toggleSummary(f.file_id)}
                     />

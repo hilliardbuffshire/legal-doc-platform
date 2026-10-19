@@ -16,12 +16,19 @@ from dotenv import load_dotenv
 import fitz          # PyMuPDF — 한국어 UniKS 인코딩 지원
 from pypdf import PdfReader  # fitz 폴백용
 import anthropic
+from fastapi import Header
+
+from digest import Digester
 
 load_dotenv()
 
 # ── 설정 ──────────────────────────────────────────────────────────────
 ANTHROPIC_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 SUMMARY_MODEL = os.getenv("SUMMARY_MODEL", os.getenv("CLAUDE_MODEL", "claude-opus-4-5"))
+DIGEST_MODEL  = os.getenv("DIGEST_MODEL", "claude-opus-4-8")   # 서류 전체 판독용
+ADMIN_KEY     = os.getenv("ADMIN_KEY", "")
+CASE_HINT     = os.getenv("CASE_HINT", "사건: 2023가단62004·2025가단4471(광주지법 순천지원) / 항소심 2026나20290·2026나20307. "
+                                      "원고 정상문, 피고 문영국·김광영·박봉규.")
 
 ai = anthropic.AsyncAnthropic(api_key=ANTHROPIC_KEY or "placeholder")
 
@@ -222,21 +229,83 @@ async def generate_summary(pages: list) -> str:
     except Exception:
         return ""
 
+# ── 서류 전체 판독기 ─────────────────────────────────────────────────
+digester = Digester(ai, _db_conn, DATA_DIR, UPLOAD_DIR, load_meta, _clean, DIGEST_MODEL, CASE_HINT)
+
 # ── FastAPI ───────────────────────────────────────────────────────────
-app = FastAPI(title="법률 문서 플랫폼", version="4.0")
+app = FastAPI(title="법률 문서 플랫폼", version="5.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"], allow_methods=["*"], allow_headers=["*"],
 )
+
+@app.on_event("startup")
+async def _start_digester():
+    asyncio.create_task(digester.worker())
+    digester.enqueue_unfinished()   # 재시작 전 끝나지 않은 판독 이어서
+
+def _check_admin(key: str):
+    if not ADMIN_KEY or key != ADMIN_KEY:
+        raise HTTPException(403, "관리자 키가 필요합니다.")
+
+# ── GET /api/search — 질문 관련 구간 요약·원문 쪽 ──────────────────────
+@app.get("/api/search")
+def search(q: str = Query(..., min_length=1), k: int = Query(10, le=30), budget: int = Query(30000, le=80000)):
+    return digester.search(q, k, budget)
+
+# ── GET /api/files/{fid}/digest — 서류 1건의 판독 결과 전체 ─────────────
+@app.get("/api/files/{fid}/digest")
+def get_digest(fid: str):
+    if fid not in load_meta():
+        raise HTTPException(404, "파일을 찾을 수 없습니다.")
+    d = digester._load(fid)
+    return {"status": digester.status_map().get(fid, {}), "chunks": d["chunks"], "dups": d["dups"]}
+
+# ── 관리자: 판독 상태·재판독·가져오기 ──────────────────────────────────
+@app.get("/api/admin/digest")
+def admin_status(x_admin_key: str = Header("")):
+    _check_admin(x_admin_key)
+    meta, st = load_meta(), digester.status_map()
+    return [{"file_id": f, "file_name": i["file_name"], "pages": i.get("total_pages", 0), **st.get(f, {})}
+            for f, i in meta.items()]
+
+class ReprocessReq(BaseModel):
+    fids: list = []
+    force: bool = False
+
+@app.post("/api/admin/digest/reprocess")
+def admin_reprocess(req: ReprocessReq, x_admin_key: str = Header("")):
+    _check_admin(x_admin_key)
+    fids = req.fids or list(load_meta().keys())
+    for f in fids:
+        if req.force:
+            digester.forget(f)
+        digester.enqueue(f)
+    return {"queued": len(fids)}
+
+class ImportReq(BaseModel):
+    chunks: list
+    summary: str = ""
+    dups: dict = {}
+
+@app.post("/api/admin/digest/{fid}/import")
+def admin_import(fid: str, req: ImportReq, x_admin_key: str = Header("")):
+    _check_admin(x_admin_key)
+    if fid not in load_meta():
+        raise HTTPException(404, "파일을 찾을 수 없습니다.")
+    digester.import_chunks(fid, req.chunks, req.summary, req.dups)
+    return {"ok": True}
 
 # ── GET /api/files ─────────────────────────────────────────────────────
 @app.get("/api/files")
 def get_files():
     meta   = load_meta()
     db_map = db_get_all()
+    dg_map = digester.status_map()
     result = []
     for fid, info in meta.items():
         row = db_map.get(fid, {})
+        dg  = dg_map.get(fid, {})
         result.append({
             **info,
             "star":           row.get("star", 0),
@@ -244,6 +313,10 @@ def get_files():
             "lawyer_comment": row.get("lawyer_comment", ""),
             "summary":        row.get("summary", ""),
             "updated_at":     row.get("updated_at", 0),
+            "digest":         dg.get("summary", ""),          # 전체 판독 기반 요약
+            "digest_status":  dg.get("status", "none"),
+            "digest_done":    dg.get("done", 0),
+            "digest_total":   dg.get("total", 0),
         })
     return sorted(result, key=lambda x: x["updated_at"], reverse=True)
 
@@ -301,6 +374,8 @@ async def upload(file: UploadFile = File(...)):
     meta[fid] = info
     save_meta(meta)
     db_upsert(fid, summary=summary)
+    if ext == "pdf":
+        digester.enqueue(fid)   # 백그라운드에서 전체 쪽 판독 시작
 
     return {"skipped": False, "file": info, "message": f"업로드 완료 — '{formatted_title}'"}
 
@@ -338,6 +413,7 @@ def delete_file(fid: str):
     save_meta(meta)
     with _db_conn() as con:
         con.execute("DELETE FROM file_meta WHERE file_id = ?", [fid])
+    digester.forget(fid)
     return {"ok": True}
 
 # ── PATCH /api/files/{fid}/name ───────────────────────────────────────
